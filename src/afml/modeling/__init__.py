@@ -28,7 +28,13 @@ Public API:
   ``train_brain_two`` → :class:`BrainTwoResult`.
 """
 
-from afml.modeling.calibration import CalibrationResult, fit_calibrated_classifier
+from afml.modeling.calibration import (
+    CalibrationResult,
+    PurgedCVCalibratedSBRF,
+    fit_calibrated_classifier,
+    fit_calibrated_classifier_with_purged_cv,
+    fit_calibrated_sbrf_with_purged_cv,
+)
 from afml.modeling.concurrency import (
     average_uniqueness,
     concurrency_count,
@@ -41,10 +47,13 @@ from afml.modeling.sequential_bootstrap import sequential_bootstrap
 __all__ = [
     "BrainTwoResult",
     "CalibrationResult",
+    "PurgedCVCalibratedSBRF",
     "SequentiallyBootstrappedRandomForest",
     "average_uniqueness",
     "concurrency_count",
     "fit_calibrated_classifier",
+    "fit_calibrated_classifier_with_purged_cv",
+    "fit_calibrated_sbrf_with_purged_cv",
     "indicator_matrix",
     "sequential_bootstrap",
     "train_brain_two",

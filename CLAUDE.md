@@ -77,6 +77,15 @@ The following are forbidden across `src/afml/`. Reviewers and CI must catch them
 
 Integration gate: `make integration` runs `tests/integration/test_phase1_to_4.py` which exercises a synthetic raw-tick → Phase 4 end-to-end with all three contracts asserted.
 
+## Phase 5 leakage / calibration contracts (AFML 0-5 audit)
+
+- **V1 — calibration via PurgedKFold.** ``CalibratedClassifierCV`` defaults to a stratified KFold that shuffles non-IID labels. Two safe alternatives are exposed:
+  - **SBRF path:** ``afml.modeling.fit_calibrated_sbrf_with_purged_cv`` runs a manual cross-fitting loop that *explicitly invokes* ``PurgedKFold.split(t0, t1)``. Tests spy on the call.
+  - **Generic-classifier path (XGBoost / vanilla RF):** ``afml.modeling.fit_calibrated_classifier_with_purged_cv`` passes ``cv=PurgedKFoldSklearn(t0, t1)`` into ``CalibratedClassifierCV``.
+- **V2 — strict embargoed outer evaluation.** ``train_brain_two`` uses ``PurgedWalkForwardCV`` for the OUTER train/holdout split with a per-fold ``max(train_t1) + embargo < min(holdout_t0)`` assertion via ``FoldDiagnostics.passes_index_intersection``.
+- **V3 — XGBoost mirror + sample-weight propagation.** When ``compare_with_xgboost=True`` (default), both SBRF and XGBoost get fit with ``sample_weight = ū_i`` and calibrated via purged CV. Tests verify weight propagation by comparing skewed-weight vs uniform-weight predictions.
+- **V2.1 — empty-MDA pass-through.** When Phase 4's circuit breaker fires (``X.shape[1] == 0``), ``train_brain_two`` returns a sentinel ``BrainTwoResult`` with ``halted_at_mda_upstream=True`` instead of crashing.
+
 ## Workflow — PR per milestone
 
 Remote: **<https://github.com/denissalamanca/QLab>** (default branch `main`).

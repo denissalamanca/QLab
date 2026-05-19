@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -142,6 +143,87 @@ class PurgedKFold:
                 sort_order[train_idx_sorted].astype(np.int64),
                 sort_order[test_idx_sorted].astype(np.int64),
             )
+
+
+class PurgedKFoldSklearn:
+    """sklearn-CV-compatible adapter for :class:`PurgedKFold`.
+
+    AFML 0-5 audit V1: ``sklearn.calibration.CalibratedClassifierCV`` (and any
+    other sklearn CV consumer) accepts a ``cv`` object whose ``split(X, y,
+    groups)`` returns ``(train_idx, test_idx)`` pairs. The underlying
+    :class:`PurgedKFold` keys on label horizons ``(t0, t1)`` rather than on
+    the rows of ``X``; this adapter holds the horizons internally and exposes
+    sklearn's expected interface so the wrapper inside calibration / scoring
+    code invokes **our** purged splits — never sklearn's default stratified
+    KFold.
+
+    Parameters
+    ----------
+    t0, t1
+        Per-sample event horizons. Length must equal the number of rows
+        ``sklearn`` will pass to :meth:`split` as ``X``.
+    n_splits, embargo_pct
+        Forwarded to :class:`PurgedKFold`.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from sklearn.calibration import CalibratedClassifierCV
+    >>> from sklearn.ensemble import RandomForestClassifier
+    >>> t0 = np.arange(200, dtype=np.int64)
+    >>> t1 = t0 + 3
+    >>> cv = PurgedKFoldSklearn(t0, t1, n_splits=4, embargo_pct=0.02)
+    >>> # cv is now drop-in for any sklearn meta-estimator's ``cv`` argument.
+    """
+
+    def __init__(
+        self,
+        t0: npt.NDArray[np.int64] | npt.NDArray[np.floating],
+        t1: npt.NDArray[np.int64] | npt.NDArray[np.floating],
+        *,
+        n_splits: int = DEFAULT_N_SPLITS,
+        embargo_pct: float = DEFAULT_EMBARGO_PCT,
+    ) -> None:
+        self._t0 = np.asarray(t0)
+        self._t1 = np.asarray(t1)
+        if self._t0.shape != self._t1.shape or self._t0.ndim != 1:
+            raise ValueError(
+                f"t0 and t1 must be 1-D and same shape; got {self._t0.shape} / {self._t1.shape}"
+            )
+        self._inner = PurgedKFold(n_splits=n_splits, embargo_pct=embargo_pct)
+        # Public-ish attributes — match what sklearn looks for on a CV object.
+        self.n_splits = n_splits
+        self.embargo_pct = embargo_pct
+
+    def split(
+        self,
+        X: Any = None,
+        y: Any = None,
+        groups: Any = None,
+    ) -> Iterator[tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]]:
+        # X / y / groups are part of sklearn's CV contract — unused here.
+        del X, y, groups
+        """Yield purged ``(train_idx, test_idx)`` pairs.
+
+        Ignores ``X`` / ``y`` / ``groups`` — the splitter is parameterised by
+        the per-sample ``(t0, t1)`` arrays passed at construction time.
+
+        AFML 0-5 audit V1: this method is the literal hook sklearn's
+        :class:`sklearn.calibration.CalibratedClassifierCV` calls during its
+        ``.fit()`` cycle when this object is supplied as ``cv``. The unit test
+        ``test_calibration_uses_purged_kfold_split`` confirms it is invoked.
+        """
+        yield from self._inner.split(self._t0, self._t1)
+
+    def get_n_splits(
+        self,
+        X: Any = None,
+        y: Any = None,
+        groups: Any = None,
+    ) -> int:
+        """Number of folds — required by sklearn's CV interface."""
+        del X, y, groups
+        return self.n_splits
 
 
 @dataclass(frozen=True, slots=True)

@@ -110,3 +110,6 @@ apps/web/coverage/
 
 # Phase sign-off ledgers (recreated per phase, not checked in mid-build)
 PHASE_*_SIGNOFF.md
+
+# Local Claude Code agent state (scheduled tasks, transient locks)
+.claude/

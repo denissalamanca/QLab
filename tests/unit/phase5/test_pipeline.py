@@ -80,6 +80,7 @@ def test_brain_two_returns_usable_calibrated_classifier(
     on fresh data — that's the artefact Phase 7 will deploy."""
     ds = predictable_meta_labels
     result = train_brain_two(ds.X, ds.y, ds.t0, ds.t1, n_splits=3, n_estimators=30, random_state=0)
+    assert result.last_calibration is not None  # not halted upstream
     proba = result.last_calibration.calibrated.predict_proba(ds.X[:50])
     assert proba.shape == (50, 2)
     np.testing.assert_allclose(proba.sum(axis=1), 1.0, atol=1e-9)
