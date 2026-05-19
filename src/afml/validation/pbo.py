@@ -34,6 +34,13 @@ import numpy.typing as npt
 from scipy.stats import rankdata
 
 DEFAULT_RANK_EPSILON: float = 1e-6
+# AFML Phase 0-6 audit V1 — PBO is a *relative* statistic: it measures how
+# the in-sample-best strategy ranks out-of-sample against its PEERS. A single
+# strategy has no peers, so the rank is degenerate (always 1) and the PBO is
+# mathematically meaningless. We require a cohort of at least this many
+# strategies (typically all trials of one ``algorithmic_family`` pulled from
+# the Alpha Registry — see :mod:`afml.validation.cohort`).
+MIN_COHORT_STRATEGIES: int = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,8 +102,13 @@ def compute_pbo(
     if is_arr.ndim != 2:
         raise ValueError(f"performance arrays must be 2-D, got {is_arr.ndim}-D")
     n_splits, n_strategies = is_arr.shape
-    if n_strategies < 2:
-        raise ValueError(f"need ≥ 2 candidate strategies for PBO, got {n_strategies}")
+    if n_strategies < MIN_COHORT_STRATEGIES:
+        raise ValueError(
+            f"PBO is undefined on a single strategy — it ranks the IS-best against "
+            f"its cohort peers. Got an (n_splits x {n_strategies}) matrix; need "
+            f">= {MIN_COHORT_STRATEGIES} strategies (AFML Phase 0-6 audit V1). Build a "
+            f"multi-strategy cohort via afml.validation.build_cohort_performance_matrices."
+        )
     if n_splits < 1:
         raise ValueError("need ≥ 1 CPCV split")
     if not np.all(np.isfinite(is_arr)) or not np.all(np.isfinite(oos_arr)):

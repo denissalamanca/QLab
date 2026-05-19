@@ -34,7 +34,7 @@ import numpy.typing as npt
 from sklearn.metrics import brier_score_loss
 
 from afml.validation.cpcv import CombinatoriallyPurgedKFold
-from afml.validation.dsr import DSRResult, deflated_sharpe_ratio
+from afml.validation.dsr import DSR_MIN_TRIALS, DSRResult, deflated_sharpe_ratio
 from afml.validation.pbo import PBOResult, compute_pbo
 from afml.validation.target_shuffling import (
     TargetShufflingResult,
@@ -75,7 +75,14 @@ class ValidationResult:
 
     @property
     def passes_phase6_dod(self) -> bool:
-        """Blueprint §8.3 DoD — PBO < 0.05 AND DSR > 1.0 AND no leakage."""
+        """Blueprint §8.3 DoD — PBO < 0.05 AND DSR > threshold AND no leakage.
+
+        A DSR cold-start quarantine (AFML Phase 0-6 audit V2) hard-fails the
+        gate regardless of the other metrics: an unvalidated trial population
+        cannot be trusted.
+        """
+        if self.dsr.quarantined:
+            return False
         return (
             self.pbo.pbo < self.pbo_threshold
             and self.dsr.dsr > self.dsr_threshold
@@ -143,6 +150,7 @@ def validate_strategy(  # noqa: PLR0915 — single orchestration; clarity wins
     bet_threshold: float = DEFAULT_BET_THRESHOLD,
     sharpe_std_of_trials: float | None = None,
     periods_per_year: int = 252,
+    dsr_min_trials: int = DSR_MIN_TRIALS,
     random_state: int = 0,
     raise_on_leakage: bool = True,
 ) -> ValidationResult:
@@ -270,6 +278,7 @@ def validate_strategy(  # noqa: PLR0915 — single orchestration; clarity wins
         n_trials=n_trials,
         sharpe_std_of_trials=sharpe_std_of_trials,
         periods_per_year=periods_per_year,
+        min_trials=dsr_min_trials,
     )
 
     shuffling_result = target_shuffling_test(

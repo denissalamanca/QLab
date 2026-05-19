@@ -68,9 +68,17 @@ def test_pbo_rejects_bad_input() -> None:
     is_perf = rng.standard_normal((10, 5))
     with pytest.raises(ValueError, match="shape mismatch"):
         compute_pbo(is_perf, rng.standard_normal((10, 6)))
-    with pytest.raises(ValueError, match="≥ 2"):
-        compute_pbo(rng.standard_normal((10, 1)), rng.standard_normal((10, 1)))
     with pytest.raises(ValueError, match="finite"):
         bad = is_perf.copy()
         bad[0, 0] = np.nan
         compute_pbo(bad, is_perf)
+
+
+@pytest.mark.phase6
+def test_pbo_rejects_single_strategy_matrix() -> None:
+    """AFML Phase 0-6 audit V1 — PBO on a single strategy (n×1 matrix) is
+    mathematically meaningless and must raise with a cohort-required message."""
+    rng = np.random.default_rng(0)
+    single = rng.standard_normal((15, 1))
+    with pytest.raises(ValueError, match=r"single strategy|cohort"):
+        compute_pbo(single, single)

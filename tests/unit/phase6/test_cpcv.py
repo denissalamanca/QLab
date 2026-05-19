@@ -138,6 +138,73 @@ def test_oos_path_construction_covers_universe() -> None:
 
 
 @pytest.mark.phase6
+def test_cpcv_non_contiguous_embargo_protects_each_block_boundary() -> None:
+    """AFML Phase 0-6 audit V3 — when a combination's test groups are
+    NON-contiguous (e.g. groups 0 and 2 with group 1 as train in between),
+    the embargo must be applied to the right boundary of EACH contiguous
+    test block, not just the global ``max(t1)``.
+
+    We construct a 4-group split, force the test combination ``(0, 2)``, and
+    verify that the train samples immediately after group 0 (i.e. the start
+    of group 1) are embargoed out — proving the middle training block's left
+    edge is protected.
+    """
+    n = 400
+    n_groups = 4
+    embargo_pct = 0.05
+    embargo_size = int(np.floor(n * embargo_pct))
+    t0 = np.arange(n, dtype=np.int64)
+    t1 = t0 + 1  # unit horizons → isolate the embargo from the overlap purge
+    cv = CombinatoriallyPurgedKFold(n_groups=n_groups, n_test_groups=2, embargo_pct=embargo_pct)
+    group_size = n // n_groups  # 100
+
+    # Find the fold whose test groups are exactly (0, 2) — non-contiguous.
+    target = next(fold for fold in cv.split(t0, t1) if fold.test_groups == (0, 2))
+    train_set = set(target.train_idx.tolist())
+
+    # Group 0 occupies sorted positions [0, 100); its right boundary is at 100.
+    # The embargo must drop [100, 100 + embargo_size) — the LEFT edge of the
+    # middle training block (group 1). Those indices must NOT be in train.
+    g0_right_embargo = range(group_size, group_size + embargo_size)
+    leaked_after_g0 = [i for i in g0_right_embargo if i in train_set]
+    assert not leaked_after_g0, (
+        f"embargo failed to protect group-0 right boundary; leaked: {leaked_after_g0}"
+    )
+
+    # Group 2 occupies [200, 300); its right boundary embargo drops
+    # [300, 300 + embargo_size) — the left edge of group 3.
+    g2_right_embargo = range(3 * group_size, 3 * group_size + embargo_size)
+    leaked_after_g2 = [i for i in g2_right_embargo if i in train_set]
+    assert not leaked_after_g2, (
+        f"embargo failed to protect group-2 right boundary; leaked: {leaked_after_g2}"
+    )
+
+
+@pytest.mark.phase6
+def test_cpcv_non_contiguous_purge_no_horizon_overlap() -> None:
+    """For a non-contiguous test combination with overlapping horizons, NO
+    train sample's ``[t0, t1]`` may overlap EITHER test block's window."""
+    n = 400
+    n_groups = 4
+    t0 = np.arange(n, dtype=np.int64)
+    t1 = t0 + 8  # heavy overlap
+    cv = CombinatoriallyPurgedKFold(n_groups=n_groups, n_test_groups=2, embargo_pct=0.0)
+    group_size = n // n_groups
+
+    target = next(fold for fold in cv.split(t0, t1) if fold.test_groups == (0, 2))
+    # Per-block windows.
+    block0 = (0, group_size)
+    block2 = (2 * group_size, 3 * group_size)
+    for b_start, b_stop in (block0, block2):
+        b_t0_min = int(t0[b_start])
+        b_t1_max = int(t1[b_start:b_stop].max())
+        overlap = (t0[target.train_idx] <= b_t1_max) & (t1[target.train_idx] >= b_t0_min)
+        assert not overlap.any(), (
+            f"train horizon overlaps test block [{b_start},{b_stop}) — purge leak"
+        )
+
+
+@pytest.mark.phase6
 def test_cpcv_indices_address_original_row_order() -> None:
     """If we shuffle the input, returned indices must still index back to
     the original rows."""
