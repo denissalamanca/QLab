@@ -181,6 +181,19 @@ class AlphaRegistryRepository:
                 raise KeyError(f"No experiment with id={experiment_id}")
             exp.is_deployed = deployed
 
+    def record_validation(self, experiment_id: UUID, *, pbo: float, dsr: float) -> None:
+        """Attach Phase 6 CPCV validation outcomes to an experiment.
+
+        Populates ``pbo`` / ``dsr`` so the strategy surfaces on the Phase 9
+        sign-off dashboard (:meth:`awaiting_signoff`).
+        """
+        with self.session() as s:
+            exp = s.get(Experiment, experiment_id)
+            if exp is None:
+                raise KeyError(f"No experiment with id={experiment_id}")
+            exp.pbo = pbo
+            exp.dsr = dsr
+
     # ------------------------------------------------------------------- reads
     def total_trials(self) -> int:
         """Total hypotheses tested — drives DSR penalty in Phase 6."""
@@ -203,6 +216,27 @@ class AlphaRegistryRepository:
     def deployed(self) -> list[Experiment]:
         with self.session() as s:
             return list(s.scalars(select(Experiment).where(Experiment.is_deployed.is_(True))))
+
+    def awaiting_signoff(self) -> list[Experiment]:
+        """Validated strategies awaiting CEO sign-off (Phase 9 §11.1).
+
+        A strategy is awaiting sign-off when it has cleared validation
+        (``pbo`` / ``dsr`` populated by :meth:`record_validation`), has the
+        normal ``completed`` status (not ``FAILED_AT_MDA``), and is not yet
+        deployed to live capital. Sorted most-recent first.
+        """
+        with self.session() as s:
+            stmt = (
+                select(Experiment)
+                .where(
+                    Experiment.is_deployed.is_(False),
+                    Experiment.status == EXPERIMENT_STATUS_COMPLETED,
+                    Experiment.pbo.is_not(None),
+                    Experiment.dsr.is_not(None),
+                )
+                .order_by(Experiment.timestamp.desc())
+            )
+            return list(s.scalars(stmt))
 
     def get(self, experiment_id: UUID) -> Experiment | None:
         with self.session() as s:
