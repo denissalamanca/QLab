@@ -1,0 +1,155 @@
+"""Phase 7 orchestrator — signals → sized bets → risk → broker dispatch.
+
+The :class:`ExecutionEngine` is the single seam between Brain 2's calibrated
+probabilities and the broker. For a batch of signals it:
+
+1. Sizes each bet from its probability (:mod:`afml.execution.bet_sizing`),
+   using the Mixture-of-Gaussians fallback when the batch is non-Gaussian.
+2. Pushes each size through the :class:`RiskEngine` — concurrent-position
+   scaling, ESMA leverage, and the FTMO drawdown-buffer hard cap.
+3. Translates the surviving margin commitments into broker orders and
+   dispatches them, collecting fills.
+
+The engine never lets total committed margin exceed the FTMO buffer, even
+under a pathological burst of simultaneous max-confidence signals — that is
+the Blueprint §9.3 margin-constraint guarantee.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from afml.config.assets import AssetClass, get_asset
+from afml.execution.bet_sizing import bet_sizes_for_batch
+from afml.execution.brokers.base import BrokerAdapter, Fill, Order, OrderSide
+from afml.execution.risk import RiskEngine, SizedBet
+
+
+@dataclass(frozen=True, slots=True)
+class Signal:
+    """A Brain-2 trade signal ready for sizing.
+
+    Attributes
+    ----------
+    asset
+        Symbol from the 14-asset universe.
+    probability
+        Calibrated ``P(success)`` from Brain 2.
+    side
+        Direction of the primary (Brain 1) signal.
+    reference_price
+        Current price used for the (mock) fill.
+    """
+
+    asset: str
+    probability: float
+    side: OrderSide
+    reference_price: float
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchResult:
+    """Outcome of an :meth:`ExecutionEngine.execute_batch` call."""
+
+    fills: list[Fill]
+    sized_bets: list[SizedBet]
+    total_margin_committed: float
+    n_orders_submitted: int
+    n_skipped: int
+    used_mixture_fallback: bool
+
+    @property
+    def n_signals(self) -> int:
+        return len(self.sized_bets)
+
+
+@dataclass(slots=True)
+class ExecutionEngine:
+    """Sizes and dispatches a batch of Brain-2 signals under risk limits.
+
+    Parameters
+    ----------
+    broker
+        Any :class:`BrokerAdapter` (mock or live MT5). Must be connected.
+    risk_engine
+        The :class:`RiskEngine` holding the account equity, ``c_95``, and
+        FTMO buffer.
+    min_margin
+        Margin commitments below this (in account currency) are treated as
+        skips — sub-threshold bets aren't worth the transaction cost.
+    """
+
+    broker: BrokerAdapter
+    risk_engine: RiskEngine
+    min_margin: float = 1e-9
+    _dispatched: list[Fill] = field(default_factory=list)
+
+    def execute_batch(self, signals: list[Signal], *, random_state: int = 0) -> DispatchResult:
+        """Size, risk-check, and dispatch a batch of signals.
+
+        Bets are processed in descending probability order so the highest-
+        confidence signals claim the margin budget first when it's scarce.
+        """
+        if not self.broker.is_connected():
+            raise RuntimeError("broker not connected — call broker.connect() first")
+        if not signals:
+            return DispatchResult([], [], 0.0, 0, 0, False)
+
+        probs = np.array([s.probability for s in signals], dtype=np.float64)
+        batch = bet_sizes_for_batch(probs, random_state=random_state)
+
+        # Process highest-confidence first (descending probability).
+        order_indices = np.argsort(-probs, kind="mergesort")
+
+        fills: list[Fill] = []
+        sized_bets: list[SizedBet] = []
+        n_submitted = 0
+        n_skipped = 0
+
+        for idx in order_indices:
+            signal = signals[idx]
+            raw_size = float(batch.sizes[idx])
+            asset_class = self._asset_class(signal.asset)
+            sized = self.risk_engine.size_bet(raw_size, asset_class)
+            sized_bets.append(sized)
+
+            if sized.margin <= self.min_margin:
+                n_skipped += 1
+                continue
+
+            order = Order(
+                asset=signal.asset,
+                side=signal.side,
+                size=sized.scaled_size,
+                margin=sized.margin,
+            )
+            fill = self.broker.submit_order(order, signal.reference_price)
+            fills.append(fill)
+            n_submitted += 1
+
+        self._dispatched.extend(fills)
+        return DispatchResult(
+            fills=fills,
+            sized_bets=sized_bets,
+            total_margin_committed=self.risk_engine.committed_margin,
+            n_orders_submitted=n_submitted,
+            n_skipped=n_skipped,
+            used_mixture_fallback=batch.used_mixture_fallback,
+        )
+
+    def emergency_flatten(self, reference_prices: dict[str, float]) -> list[Fill]:
+        """Close every open position and reset the risk budget.
+
+        Wired to the Phase 9 ``/emergency/flatten`` control-plane endpoint.
+        """
+        closes = self.broker.flatten_all(reference_prices)
+        self.risk_engine.reset()
+        return closes
+
+    @staticmethod
+    def _asset_class(symbol: str) -> AssetClass:
+        """Resolve the asset class for ESMA leverage. Falls back to FX-tier
+        only for symbols inside the universe; unknown symbols raise."""
+        return get_asset(symbol).asset_class
