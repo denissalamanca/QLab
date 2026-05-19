@@ -10,6 +10,11 @@ cumulative counts of +1 / −1 ticks since the previous bar.
 A new bar is sampled when ``θ_t ≥ E_0[T] · max(P⁺, P⁻)``, with EWMA estimates
 of ``E_0[T]`` (expected ticks per bar) and ``P⁺`` = P[b = +1].
 
+**Causal-update invariant (AFML audit Vulnerability 3):** identical to TIB —
+both EMAs are last updated at the close of bar k-1, read-only during the
+forming bar k. See ``tick_imbalance.py`` for full discussion + the
+``test_trb_truncation_invariance`` truncation-equality proof.
+
 TRB is most informative in momentum regimes; combined with TIB and time bars
 in the Jarque-Bera tournament to pick the best sampling for each instrument.
 """

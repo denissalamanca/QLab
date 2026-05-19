@@ -5,9 +5,14 @@ Triple-Barrier's profit-take / stop-loss multipliers are scaled by this rolling
 exponentially-weighted standard deviation so they self-adapt to the local
 volatility regime.
 
-Strictly causal: at index ``t`` the result depends only on returns at indices
-``< t``. We achieve this by computing the EWM std at ``t`` from returns
-``[0..t]`` and then ``.shift(1)``-ing the output one bar forward.
+**Strictly causal (AFML audit Vulnerability 4):** at index ``t`` the result
+depends ONLY on returns at indices ``< t``. We compute the EWM std at ``t``
+from returns ``[0..t]`` and then ``.shift(1)`` the output one bar forward, so
+``vol[t]`` is determined entirely by information available at ``t-1`` —
+``return[t]`` itself plays no role in setting the barriers around an entry at
+``t``. Proven by ``tests/unit/phase2/test_volatility.py::
+test_volatility_does_not_use_return_at_t``: perturbing ``returns[t]`` leaves
+``vol[t]`` numerically unchanged.
 """
 
 from __future__ import annotations

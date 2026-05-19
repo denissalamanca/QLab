@@ -8,14 +8,17 @@ remains an honest measure of the multiple-testing penalty.
 
 from __future__ import annotations
 
+import hashlib
 from uuid import uuid4
 
+import orjson
 import pytest
 
 from afml.core.registry import (
     AlphaRegistryRepository,
     DuplicateHypothesisError,
 )
+from afml.core.registry.repository import _hash_hyperparameters
 
 
 @pytest.fixture
@@ -197,3 +200,26 @@ def test_mark_deployed_promotes_existing(repo: AlphaRegistryRepository) -> None:
 def test_mark_deployed_missing_raises(repo: AlphaRegistryRepository) -> None:
     with pytest.raises(KeyError):
         repo.mark_deployed(uuid4(), True)
+
+
+@pytest.mark.phase0
+def test_hash_algorithm_is_sha256_orjson_sorted_keys() -> None:
+    """AFML audit §2.1 — Alpha Registry dedup is computed as SHA-256 over the
+    orjson-serialized, sorted-key hyperparameter vector.
+
+    Pin the exact hex digest for a known input so a future refactor that
+    silently swaps the hash algorithm (or drops sorted-key serialization) is
+    immediately caught.
+    """
+    hparams = {"vol_span": 100, "h_multiplier": 2.0, "asset": "EURUSD"}
+    digest = _hash_hyperparameters(hparams)
+
+    # Re-derive the expected digest exactly per the audit's required recipe.
+    expected = hashlib.sha256(orjson.dumps(hparams, option=orjson.OPT_SORT_KEYS)).hexdigest()
+
+    assert digest == expected
+    # SHA-256 is a 64-hex-char digest.
+    assert len(digest) == 64
+    # And it must be order-independent (sorted-keys requirement).
+    reordered = {"asset": "EURUSD", "h_multiplier": 2.0, "vol_span": 100}
+    assert _hash_hyperparameters(reordered) == digest

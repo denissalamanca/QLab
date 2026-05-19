@@ -1,4 +1,4 @@
-"""Fixed-Width Fractional Differencing (Blueprint §3.2).
+"""Fixed-Width Fractional Differencing (Blueprint §3.2, AFML audit V2).
 
 The standard ``.diff()`` operator (integer differencing) destroys market memory
 to achieve stationarity. Fractional differencing preserves long-range dependence
@@ -9,6 +9,13 @@ Chapter 5): the convolution weights are truncated at the first index where
 ``|ω_l| < τ``, giving a hard upper bound ``l*`` on the look-back. Expanding-window
 variants would silently grow the look-back as more history accrues — that
 violates causality (see ``causality.py``).
+
+**Constant-history invariant (AFML audit Vulnerability 2):**
+``ffd_apply`` returns an array of length ``n - l*``. The first ``l*`` rows of
+the raw fixed-window convolution are dropped so the resulting series consists
+**only** of points that have a complete history of length ``l*``. This is what
+keeps the marginal distribution stationary and the ADF test honest — every
+output row is computed from exactly ``l*`` input lags, never fewer.
 
 The numba-JIT'd inner loops handle multi-year tick datasets in seconds rather
 than minutes.
@@ -74,20 +81,27 @@ def _apply_fixed_window(
     series: npt.NDArray[np.float64],
     weights: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.float64]:
-    """Apply fixed-width FFD weights to ``series``.
+    """Apply fixed-width FFD weights to ``series``, returning length ``n - l*``.
 
-    Output is the same length as input; the first ``l-1`` entries are NaN
-    (insufficient history). The look-back is strictly bounded — this is what
-    makes the truncation hash test pass.
+    Only output points with a complete ``l*``-long history are emitted — the
+    first ``l*`` rows of the raw convolution are dropped (AFML audit V2). This
+    is what makes every output row identically distributed under stationarity.
     """
     n = series.shape[0]
     n_w = weights.shape[0]
-    out = np.full(n, np.nan, dtype=np.float64)
-    for i in range(n_w - 1, n):
+    if n <= n_w:
+        return np.empty(0, dtype=np.float64)
+    # Output index 0 corresponds to input index n_w (which uses inputs
+    # [1, n_w]). Output index i corresponds to input index n_w + i, using
+    # inputs [i + 1, n_w + i] — always exactly ``n_w`` lags.
+    out_len = n - n_w
+    out = np.empty(out_len, dtype=np.float64)
+    for out_i in range(out_len):
+        center = n_w + out_i
         s = 0.0
         for k in range(n_w):
-            s += weights[k] * series[i - k]
-        out[i] = s
+            s += weights[k] * series[center - k]
+        out[out_i] = s
     return out
 
 
@@ -99,9 +113,12 @@ def ffd_apply(
 ) -> npt.NDArray[np.float64]:
     """Apply FFD with order ``d`` and tolerance ``tol`` to a 1-D price series.
 
-    The output array has the same length as the input; first ``l*-1`` rows are
-    NaN (warm-up window). ``ffd_apply`` is the canonical entry point used by
-    downstream consumers and tests.
+    Returns an array of length ``n - l*``, where ``l* = len(ffd_weights(d, tol))``
+    is the fixed window. The first ``l*`` rows of the convolution — which would
+    have partial or boundary-effect history — are strictly dropped (AFML audit
+    Vulnerability 2). Every emitted row is computed from exactly ``l*`` lags
+    of the input, guaranteeing the marginal distribution is stationary by
+    construction.
     """
     if series.ndim != 1:
         raise ValueError(f"series must be 1-D; got shape {series.shape}")
@@ -170,10 +187,13 @@ def find_optimal_d(
     for d in d_grid:
         d_f = float(d)
         ffd = ffd_apply(series, d_f, tol=tol)
+        if ffd.size < 20:
+            # ADF demands ≥ 20 obs; large d / huge window leaves too few.
+            sweep[d_f] = float("nan")
+            continue
         try:
             p = adf_pvalue(ffd)
         except ValueError:
-            # Too few non-NaN points (e.g. extreme low d, huge window).
             sweep[d_f] = float("nan")
             continue
         sweep[d_f] = p

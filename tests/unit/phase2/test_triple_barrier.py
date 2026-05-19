@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 
 from afml.labeling.triple_barrier import apply_triple_barrier
+from afml.labeling.volatility import ewm_volatility
 
 
 def _bars_from_close(close: np.ndarray) -> pl.DataFrame:
@@ -177,3 +178,157 @@ def test_labels_summary_counts_consistent() -> None:
     })
     out = apply_triple_barrier(bars, events, vol_span=50)
     assert out.n_events == out.n_positive + out.n_negative
+
+
+# ----------------------------------------------------------------------------
+# AFML audit Vulnerability 1 — Triple-Barrier intra-bar path-dependency tests
+# ----------------------------------------------------------------------------
+def _bars_from_ohlc(close: np.ndarray, high: np.ndarray, low: np.ndarray) -> pl.DataFrame:
+    n = close.size
+    t0 = datetime(2024, 1, 1, tzinfo=UTC)
+    return pl.DataFrame(
+        {
+            "timestamp": [t0 + timedelta(minutes=i) for i in range(n)],
+            "open": close,
+            "high": high,
+            "low": low,
+            "close": close,
+        },
+        schema={
+            "timestamp": pl.Datetime("ms", "UTC"),
+            "open": pl.Float64,
+            "high": pl.Float64,
+            "low": pl.Float64,
+            "close": pl.Float64,
+        },
+    )
+
+
+def _flat_path_with_spike(
+    *,
+    n: int = 200,
+    event_idx: int = 100,
+    spike_idx: int = 110,
+    upper_spike_mult: float | None = None,
+    lower_spike_mult: float | None = None,
+    pre_event_vol: float = 0.001,
+    seed: int = 0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build a controlled OHLC path: noisy pre-event returns drive EWM-vol,
+    then a flat close trajectory after the event so no NORMAL bar hits either
+    barrier. Optional spike at ``spike_idx`` plants only the high (and/or low)
+    at a level guaranteed to pierce the planted barrier multiple.
+
+    Returns (close, high, low) arrays.
+    """
+    rng = np.random.default_rng(seed)
+    close = np.empty(n, dtype=np.float64)
+    close[: event_idx + 1] = 100.0 + np.cumsum(rng.standard_normal(event_idx + 1) * pre_event_vol)
+    # Post-event close is constant — only the planted spike can move things.
+    close[event_idx + 1 :] = close[event_idx]
+
+    high = close.copy()
+    low = close.copy()
+
+    log_returns = np.diff(np.log(close), prepend=np.nan)
+    sigma = float(ewm_volatility(log_returns, span=20)[event_idx])
+
+    if upper_spike_mult is not None:
+        upper_barrier = close[event_idx] * (1.0 + sigma)
+        high[spike_idx] = upper_barrier * upper_spike_mult
+    if lower_spike_mult is not None:
+        lower_barrier = close[event_idx] * (1.0 - sigma)
+        low[spike_idx] = lower_barrier * lower_spike_mult
+
+    return close, high, low
+
+
+@pytest.mark.phase2
+def test_intra_bar_high_triggers_upper_even_if_close_inside() -> None:
+    """AFML audit V1 — intra-bar wick through the upper barrier triggers a
+    take-profit hit even when the bar closes back inside the channel.
+
+    Construction: a deterministic flat post-event close trajectory (no normal
+    bar can touch a barrier) with a single ``high`` spike at index 110 that
+    pierces the upper barrier. The old close-only implementation would have
+    let the vertical barrier expire; the correct intra-bar implementation
+    registers the touch.
+    """
+    close, high, low = _flat_path_with_spike(upper_spike_mult=1.5)
+    bars = _bars_from_ohlc(close, high, low)
+
+    events = pl.DataFrame(
+        {"timestamp": [bars["timestamp"][100]], "side": ["long"]},
+        schema={"timestamp": pl.Datetime("ms", "UTC"), "side": pl.Utf8},
+    )
+    out = apply_triple_barrier(
+        bars,
+        events,
+        vol_span=20,
+        profit_take_mult=1.0,
+        stop_loss_mult=1.0,
+        vertical_barrier_bars=30,
+    )
+    row = out.df.row(0, named=True)
+    assert row["barrier_hit"] == "upper"
+    assert row["label"] == 1
+
+
+@pytest.mark.phase2
+def test_intra_bar_dual_touch_resolves_to_stop_loss() -> None:
+    """AFML audit V1 — Conflict-Resolution Rule.
+
+    If a single bar's high ≥ upper AND low ≤ lower (a dual-touch wide bar —
+    common in flash-crash / volatility-spike conditions), label must be 0
+    regardless of side. We penalize ambiguity to enforce conservative risk
+    modeling.
+    """
+    close, high, low = _flat_path_with_spike(
+        spike_idx=108,
+        upper_spike_mult=2.0,
+        lower_spike_mult=0.5,
+    )
+    bars = _bars_from_ohlc(close, high, low)
+
+    for side_label in ("long", "short"):
+        events = pl.DataFrame(
+            {"timestamp": [bars["timestamp"][100]], "side": [side_label]},
+            schema={"timestamp": pl.Datetime("ms", "UTC"), "side": pl.Utf8},
+        )
+        out = apply_triple_barrier(
+            bars,
+            events,
+            vol_span=20,
+            profit_take_mult=1.0,
+            stop_loss_mult=1.0,
+            vertical_barrier_bars=30,
+        )
+        row = out.df.row(0, named=True)
+        assert row["label"] == 0, f"dual-touch bar must resolve as stop-loss for side={side_label}"
+
+
+@pytest.mark.phase2
+def test_exit_price_is_barrier_price_not_close() -> None:
+    """AFML audit V1 — exit price recorded must be the barrier level (the
+    realistic fill on a stop or take-profit order), not the bar's close
+    which could be far away after a price spike.
+    """
+    close, high, low = _flat_path_with_spike(upper_spike_mult=3.0)
+    bars = _bars_from_ohlc(close, high, low)
+
+    events = pl.DataFrame(
+        {"timestamp": [bars["timestamp"][100]], "side": ["long"]},
+        schema={"timestamp": pl.Datetime("ms", "UTC"), "side": pl.Utf8},
+    )
+    out = apply_triple_barrier(
+        bars,
+        events,
+        vol_span=20,
+        profit_take_mult=1.0,
+        stop_loss_mult=1.0,
+        vertical_barrier_bars=30,
+    )
+    row = out.df.row(0, named=True)
+    # Exit at the upper barrier (where the stop / TP order would fill), not at
+    # high[110] nor close[110].
+    assert row["exit_price"] == pytest.approx(row["upper_price"])

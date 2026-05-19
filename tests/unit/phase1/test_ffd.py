@@ -59,27 +59,53 @@ def test_weights_rejects_invalid_tol() -> None:
 
 
 @pytest.mark.phase1
-def test_apply_length_and_warmup_nan() -> None:
+def test_apply_drops_first_l_star_rows_no_nan() -> None:
+    """AFML audit V2 — Constant History Length invariant.
+
+    Output length must equal ``n - l*`` exactly, and ALL output values must be
+    finite. There is no NaN warm-up: every emitted row uses exactly ``l*``
+    input lags. We use d=0.8 here so the default-tolerance window stays well
+    below the series length (l* ≈ 228 ≪ 3000).
+    """
     rng = np.random.default_rng(123)
-    series = np.cumsum(rng.standard_normal(500))
-    out = ffd_apply(series, d=0.4)
-    assert out.shape == series.shape
-    w = ffd_weights(0.4)
-    # First l-1 entries are NaN; the l-th and beyond are finite.
-    assert np.all(np.isnan(out[: len(w) - 1]))
-    assert np.all(np.isfinite(out[len(w) - 1 :]))
+    series = np.cumsum(rng.standard_normal(3000))
+    d = 0.8
+    out = ffd_apply(series, d=d)
+    w = ffd_weights(d)
+    assert len(w) < len(series), "test setup requires l* < n"
+
+    # Audit-mandated length identity.
+    assert len(out) == len(series) - len(w)
+    # No warm-up NaN — every point has a complete history.
+    assert np.all(np.isfinite(out))
+
+
+@pytest.mark.phase1
+def test_apply_returns_empty_when_window_exceeds_input() -> None:
+    """If ``n ≤ l*`` there are zero output points with a complete history."""
+    rng = np.random.default_rng(0)
+    short = np.cumsum(rng.standard_normal(50))  # well below any reasonable l*
+    out = ffd_apply(short, d=0.4)  # d=0.4 gives l* > 1000
+    assert out.shape == (0,)
 
 
 @pytest.mark.phase1
 def test_apply_d_equals_one_approximates_first_diff() -> None:
-    """``d = 1`` gives weights ≈ (1, -1) — first difference."""
+    """``d = 1`` gives weights ≈ (1, -1) — first difference.
+
+    With the new constant-history convention, the output covers input indices
+    ``[l*, n-1]``. For ``d=1`` and ``tol=1e-12`` the window is exactly 2, so
+    output index 0 corresponds to ``series[2] - series[1]``, output index 1 to
+    ``series[3] - series[2]``, etc.
+    """
     series = np.array([1.0, 3.0, 6.0, 10.0, 15.0])
     out = ffd_apply(series, d=1.0, tol=1e-12)
-    # Diff is series[i] - series[i-1].
-    diffs = np.diff(series)
-    # The output at index 1 onwards equals the diff sequence (the first entry is
-    # NaN for the warm-up).
-    assert out[1:] == pytest.approx(diffs)
+    w = ffd_weights(1.0, tol=1e-12)
+    n_w = len(w)
+    # Output covers input indices [n_w, n-1] = [2, 4]
+    diffs = np.diff(series)  # [2, 3, 4, 5]
+    expected = diffs[n_w - 1 :]  # [3, 4, 5]
+    assert out == pytest.approx(expected)
 
 
 @pytest.mark.phase1

@@ -14,7 +14,7 @@ Public API:
   events, and logs experiments to the Alpha Registry.
 """
 
-from afml.labeling.brain1 import Brain1Result, run_brain1
+from afml.labeling.brain1 import Brain1Result, merge_brain1_events, run_brain1
 from afml.labeling.orthogonality import is_orthogonal, max_correlation
 from afml.labeling.primary_alphas import (
     BollingerMeanReversion,
@@ -41,6 +41,7 @@ __all__ = [
     "is_orthogonal",
     "list_alpha_families",
     "max_correlation",
+    "merge_brain1_events",
     "register_alpha",
     "run_brain1",
 ]

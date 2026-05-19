@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -48,3 +49,22 @@ def test_trb_empty_input_returns_empty_frame() -> None:
 def test_trb_total_attributed_ticks_le_input(tick_stream_medium: pl.DataFrame) -> None:
     bars = build_tick_run_bars(tick_stream_medium)
     assert int(bars["n_ticks"].sum()) <= tick_stream_medium.height
+
+
+@pytest.mark.phase1
+def test_trb_truncation_invariance(tick_stream_large: pl.DataFrame) -> None:
+    """AFML audit V3 — TRB shares TIB's causal-update invariant.
+
+    See ``test_tib_truncation_invariance`` for the rationale: bar closes in
+    the prefix [0, truncation_idx) must be identical between full-series and
+    truncated-series runs.
+    """
+    truncation_idx = tick_stream_large.height // 2
+    full_bars = build_tick_run_bars(tick_stream_large)
+    trunc_bars = build_tick_run_bars(tick_stream_large.head(truncation_idx))
+
+    full_ts = full_bars["timestamp"].to_numpy()
+    trunc_ts = trunc_bars["timestamp"].to_numpy()
+    n = trunc_ts.size
+    assert n > 0
+    np.testing.assert_array_equal(trunc_ts, full_ts[:n])
