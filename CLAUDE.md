@@ -20,8 +20,8 @@ When the PRD and Blueprint disagree, the Blueprint wins (it's the engineering co
 | # | Phase | Agent | Status | Blueprint § | PR |
 |---|---|---|---|---|---|
 | 0 | Orchestration & Alpha Registry | — | ✅ shipped | §2 | [#1](https://github.com/denissalamanca/QLab/pull/1) |
-| 1 | Structural Data Engineering | Agent 1 | next | §3 | — |
-| 2 | Primary Signals / Brain 1 | Agent 2 | pending | §4 | — |
+| 1 | Structural Data Engineering | Agent 1 | ✅ shipped | §3 | [#3](https://github.com/denissalamanca/QLab/pull/3) |
+| 2 | Primary Signals / Brain 1 | Agent 2 | next | §4 | — |
 | 3 | Microstructure Features | Agent 3 | pending | §5 | — |
 | 4 | Feature Selection & ONC | Agent 4 | pending | §6 | — |
 | 5 | Meta-Labeling / Brain 2 | Agent 5 | pending | §7 | — |
@@ -92,7 +92,7 @@ QLab/
 ├── src/afml/
 │   ├── config/{assets, settings}.py
 │   ├── core/{events, broker}.py, registry/
-│   ├── data/                 — Phase 1
+│   ├── data/                 — Phase 1 (ingest, bars, FFD, stationarity, causality)
 │   ├── labeling/             — Phase 2 (CUSUM + Bollinger + Donchian plugins, Triple-Barrier)
 │   ├── features/             — Phase 3
 │   ├── selection/            — Phase 4 (ONC + Clustered MDA)
