@@ -119,11 +119,19 @@ module = [
     "numba.*",
     "scipy.*",
     "statsmodels.*",
+    "pandas.*",
 ]
 ignore_missing_imports = true
 # numba's @njit decorator strips typing — accept Any return from JIT'd helpers
 [[tool.mypy.overrides]]
-module = ["afml.data.ffd", "afml.data.bars.tick_imbalance", "afml.data.bars.tick_run"]
+module = [
+    "afml.data.ffd",
+    "afml.data.bars.tick_imbalance",
+    "afml.data.bars.tick_run",
+    "afml.labeling.primary_alphas.cusum",
+    "afml.labeling.triple_barrier",
+    "afml.labeling.volatility",
+]
 disable_error_code = ["misc", "no-any-return", "untyped-decorator"]
 
 [tool.pytest.ini_options]
