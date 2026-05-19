@@ -25,8 +25,8 @@ When the PRD and Blueprint disagree, the Blueprint wins (it's the engineering co
 | 3 | Microstructure Features | Agent 3 | ✅ shipped | §5 | [#5](https://github.com/denissalamanca/QLab/pull/5) |
 | 4 | Feature Selection & ONC | Agent 4 | ✅ shipped | §6 | [#8](https://github.com/denissalamanca/QLab/pull/8) |
 | 5 | Meta-Labeling / Brain 2 | Agent 5 | ✅ shipped | §7 | [#9](https://github.com/denissalamanca/QLab/pull/9) |
-| 6 | Validation / CPCV / DSR | Agent 6 | next | §8 | — |
-| 7 | Bet Sizing & Execution | Agent 7 | pending | §9 | — |
+| 6 | Validation / CPCV / DSR | Agent 6 | ✅ shipped | §8 | [#12](https://github.com/denissalamanca/QLab/pull/12) |
+| 7 | Bet Sizing & Execution | Agent 7 | next | §9 | — |
 | 8 | MLOps / Structural Breaks | Agent 8 | pending | §10 | — |
 | 9 | Control Plane (React/FastAPI) | — | pending | §11 | — |
 
