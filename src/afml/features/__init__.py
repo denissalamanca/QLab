@@ -21,15 +21,22 @@ from afml.features.hasbrouck import hasbrouck_flow
 from afml.features.kyle import kyle_lambda
 from afml.features.lempel_ziv import lempel_ziv_complexity
 from afml.features.ofi import ofi
-from afml.features.pipeline import DEFAULT_WINDOWS, compute_features
+from afml.features.pipeline import (
+    DEFAULT_WINDOWS,
+    StationarityRescueReport,
+    compute_features,
+    compute_features_with_report,
+)
 from afml.features.roll import roll_measure
 from afml.features.shannon import shannon_entropy
 
 __all__ = [
     "DEFAULT_WINDOWS",
     "FeatureSpec",
+    "StationarityRescueReport",
     "amihud_lambda",
     "compute_features",
+    "compute_features_with_report",
     "corwin_schultz_spread",
     "hasbrouck_flow",
     "kyle_lambda",
