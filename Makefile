@@ -1,4 +1,4 @@
-.PHONY: install sync lock test lint format type fix clean redis-up redis-down phase0 phase1 phase2 phase3 phase4 phase5 phase6 phase7 phase8 phase9
+.PHONY: install sync lock test lint format type fix clean redis-up redis-down phase0 phase1 phase2 phase3 phase4 phase5 phase6 phase7 phase8 phase9 integration
 
 # --- Setup ----------------------------------------------------------------------
 install:
@@ -58,6 +58,10 @@ phase8: lint type
 
 phase9: lint type
 	uv run pytest -q -m phase9
+
+# Cross-phase integration tests (AFML 0-4 audit clearance + Phase 1→4 end-to-end).
+integration: lint type
+	uv run pytest -q -m integration
 
 # --- Infra ---------------------------------------------------------------------
 redis-up:

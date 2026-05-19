@@ -39,6 +39,7 @@ make install        # uv sync --all-groups
 make sync           # uv sync (default groups only)
 make phase0         # ruff + ruff format check + mypy --strict + pytest -m phase0
 make phaseN         # same for phase N
+make integration    # ruff + mypy + pytest -m integration (cross-phase end-to-end)
 make lint           # ruff check + ruff format --check
 make type           # mypy --strict src tests
 make fix            # ruff check --fix && ruff format
@@ -67,6 +68,14 @@ The following are forbidden across `src/afml/`. Reviewers and CI must catch them
 - **Truncation hash test** (Phases 1, 3): SHA-256 of a derived series computed on full vs truncated data must match exactly over the overlap. Proves zero future-data leakage.
 - **Index intersection test** (Phase 5): `max(train_times) + embargo < min(test_times)` for every CV fold, millisecond precision.
 - **Target shuffling test** (Phase 6): retrain with randomly shuffled labels; if the model retains predictive power → `DataLeakageError`, strategy permanently rejected.
+
+## Cross-phase integration contracts (AFML 0-4 audit)
+
+- **V1 — realized t1.** Triple-Barrier output exposes both `event_timestamp` (t0), `vertical_timestamp` (conservative upper bound) and `exit_timestamp` (the **realized** barrier-touch time). Phase 4 / Phase 5 purging schemes (`PurgedKFold`, `PurgedWalkForwardCV`) **must** be given `exit_timestamp` as t1 — never the vertical. Realized t1 yields tighter purging and recovers training data without leaking.
+- **V2 — burn-in alignment.** Phase 3 rolling-window features carry an unavoidable `max(window) - 1` burn-in. Phase 2 events that fire inside the burn-in must be dropped from the labels frame, not forward-filled. Use `afml.data.align_labels_to_features(labels_df, features)` / `align_events_to_features(events, features)` at every Phase 2 → Phase 3 → Phase 4 handoff. The aligned labels frame and the features frame must always have equal row counts.
+- **V3 — empty-MDA circuit breaker.** `select_features` accepts an optional `registry: AlphaRegistryRepository` plus `experiment_metadata`. On empty survivors, it sets `SelectionResult.halted_at_mda = True` and (when a registry is wired) logs a `FAILED_AT_MDA` row — preserving the DSR multiple-testing trial count without crashing Phase 5.
+
+Integration gate: `make integration` runs `tests/integration/test_phase1_to_4.py` which exercises a synthetic raw-tick → Phase 4 end-to-end with all three contracts asserted.
 
 ## Workflow — PR per milestone
 
