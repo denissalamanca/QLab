@@ -51,6 +51,31 @@ PLATT_C: float = 1e10
 MIN_CLASS_COUNT: int = 2
 
 
+def _normalize_sample_weights(weights: npt.NDArray[np.floating]) -> npt.NDArray[np.float64]:
+    """Scale uniqueness weights so they sum to ``N`` (number of samples).
+
+    AFML 0-5 audit pre-Phase-6 patch: raw average-uniqueness weights
+    ``ū_i ∈ (0, 1]`` are fractions. Passed directly to XGBoost they can
+    trigger vanishing gradients via ``min_child_weight`` (default 1.0 —
+    a leaf with weight-sum < 1 is rejected, so a uniqueness-weighted leaf
+    needs ``Σ ū ≥ 1`` which is roughly ``2/mean(ū)`` samples instead of 1).
+
+    The fix is to scale by ``N / Σ ū`` so the *aggregate* weight matches
+    an unweighted fit while the per-sample *ratio* of weights is preserved.
+    sklearn tree-based estimators are invariant to this overall scale, but
+    XGBoost's ``min_child_weight`` is not — normalisation is therefore
+    mandatory at the boundary, not just nice-to-have.
+
+    Returns a fresh ``float64`` array. Degenerate input (all zeros) is
+    handled by returning uniform ones.
+    """
+    w = np.asarray(weights, dtype=np.float64)
+    total = float(w.sum())
+    if total <= 0.0:
+        return np.ones(w.shape, dtype=np.float64)
+    return w * (float(w.size) / total)
+
+
 @dataclass(frozen=True, slots=True)
 class CalibrationResult:
     """Diagnostic record of the isotonic-vs-sigmoid contest.
@@ -226,6 +251,12 @@ def fit_calibrated_sbrf_with_purged_cv(
     if ind_tr.shape[1] != n_train:
         raise ValueError(f"indicator_mat_train columns {ind_tr.shape[1]} != X_train rows {n_train}")
 
+    # AFML 0-5 audit pre-Phase-6 patch: normalise ū_i so the aggregate
+    # weight equals N. Preserves the relative weighting structure while
+    # preventing XGBoost ``min_child_weight`` from suppressing fractional-
+    # weight leaves. The slicing below uses the normalised vector.
+    sw_tr = _normalize_sample_weights(sw_tr)
+
     cv = PurgedKFold(n_splits=n_splits, embargo_pct=embargo_pct)
     oof_proba = np.full(n_train, np.nan, dtype=np.float64)
 
@@ -338,6 +369,10 @@ def fit_calibrated_classifier_with_purged_cv(
     n_train = X_tr.shape[0]
     if y_tr.shape != (n_train,) or sw_tr.shape != (n_train,):
         raise ValueError("y_train and sample_weight_train must match X_train rows")
+
+    # AFML 0-5 audit pre-Phase-6 patch: normalise sample weights to sum to
+    # n_train so XGBoost's ``min_child_weight`` doesn't squash leaves.
+    sw_tr = _normalize_sample_weights(sw_tr)
 
     cv = PurgedKFoldSklearn(t0_train, t1_train, n_splits=n_splits, embargo_pct=embargo_pct)
 
