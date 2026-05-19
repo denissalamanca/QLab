@@ -28,7 +28,7 @@ When the PRD and Blueprint disagree, the Blueprint wins (it's the engineering co
 | 6 | Validation / CPCV / DSR | Agent 6 | ✅ shipped | §8 | [#12](https://github.com/denissalamanca/QLab/pull/12) |
 | 7 | Bet Sizing & Execution | Agent 7 | ✅ shipped | §9 | [#15](https://github.com/denissalamanca/QLab/pull/15) |
 | 8 | MLOps / Structural Breaks | Agent 8 | ✅ shipped | §10 | [#16](https://github.com/denissalamanca/QLab/pull/16) |
-| 9 | Control Plane (React/FastAPI) | — | ✅ shipped | §11 | _pending_ |
+| 9 | Control Plane (React/FastAPI) | — | ✅ shipped | §11 | [#18](https://github.com/denissalamanca/QLab/pull/18) |
 
 **Strict phase-by-phase build.** `make phase{N-1}` must be green before any code is written for phase N. No vertical-slice shortcuts. No relaxing of unit-test assertions to make them pass — fix the underlying code.
 
