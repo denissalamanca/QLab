@@ -35,8 +35,12 @@ from sklearn.mixture import GaussianMixture
 
 # Below this probability we do not trade (meta-label says "skip").
 NO_TRADE_THRESHOLD: float = 0.5
-# Clip probabilities away from {0, 1} so the z-score denominator stays finite.
-PROBA_EPSILON: float = 1e-6
+# Clip probabilities away from {0, 1} so the z-score denominator
+# ``sqrt(p·(1-p))`` never collapses to 0 (AFML 0-8 final audit V1: a
+# perfectly-certain ensemble emitting p ∈ {0, 1} would otherwise divide by
+# zero and crash the execution agent on its best trade). Audit-mandated clip
+# bounds: ``[1e-5, 1 - 1e-5]``.
+PROBA_EPSILON: float = 1e-5
 # Shapiro-Wilk significance — below this the z-batch is "not Gaussian".
 SHAPIRO_ALPHA: float = 0.05
 # Minimum batch size for a meaningful Shapiro-Wilk test.
@@ -68,7 +72,9 @@ def bet_size_from_probability(p: float) -> float:
         raise ValueError(f"probability must be in [0, 1], got {p}")
     if p <= NO_TRADE_THRESHOLD:
         return 0.0
-    p_clipped = min(p, 1.0 - PROBA_EPSILON)
+    # AFML 0-8 final audit V1: two-sided clip away from absolute certainty so
+    # the z-score denominator stays finite even at p = 1.0 exactly.
+    p_clipped = float(np.clip(p, PROBA_EPSILON, 1.0 - PROBA_EPSILON))
     z = (p_clipped - 0.5) / np.sqrt(p_clipped * (1.0 - p_clipped))
     size = 2.0 * float(norm.cdf(z)) - 1.0
     return max(0.0, min(1.0, size))

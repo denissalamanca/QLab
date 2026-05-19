@@ -33,6 +33,7 @@ from afml.execution.brokers import (
 from afml.execution.pipeline import (
     DispatchResult,
     ExecutionEngine,
+    RehydrationResult,
     Signal,
 )
 from afml.execution.risk import RiskEngine, SizedBet
@@ -49,6 +50,7 @@ __all__ = [
     "OrderSide",
     "OrderStatus",
     "Position",
+    "RehydrationResult",
     "RiskEngine",
     "Signal",
     "SizedBet",
