@@ -22,8 +22,8 @@ When the PRD and Blueprint disagree, the Blueprint wins (it's the engineering co
 | 0 | Orchestration & Alpha Registry | — | ✅ shipped | §2 | [#1](https://github.com/denissalamanca/QLab/pull/1) |
 | 1 | Structural Data Engineering | Agent 1 | ✅ shipped | §3 | [#3](https://github.com/denissalamanca/QLab/pull/3) |
 | 2 | Primary Signals / Brain 1 | Agent 2 | ✅ shipped | §4 | [#4](https://github.com/denissalamanca/QLab/pull/4) |
-| 3 | Microstructure Features | Agent 3 | next | §5 | — |
-| 4 | Feature Selection & ONC | Agent 4 | pending | §6 | — |
+| 3 | Microstructure Features | Agent 3 | ✅ shipped | §5 | [#5](https://github.com/denissalamanca/QLab/pull/5) |
+| 4 | Feature Selection & ONC | Agent 4 | next | §6 | — |
 | 5 | Meta-Labeling / Brain 2 | Agent 5 | pending | §7 | — |
 | 6 | Validation / CPCV / DSR | Agent 6 | pending | §8 | — |
 | 7 | Bet Sizing & Execution | Agent 7 | pending | §9 | — |
@@ -94,7 +94,7 @@ QLab/
 │   ├── core/{events, broker}.py, registry/
 │   ├── data/                 — Phase 1 (ingest, bars, FFD, stationarity, causality)
 │   ├── labeling/             — Phase 2 (CUSUM + Bollinger + Donchian plugins, Triple-Barrier)
-│   ├── features/             — Phase 3
+│   ├── features/             — Phase 3 (50+ causal microstructure metrics)
 │   ├── selection/            — Phase 4 (ONC + Clustered MDA)
 │   ├── modeling/             — Phase 5 (Sequential bootstrap, SBRF, calibration)
 │   ├── validation/           — Phase 6 (CPCV, PBO, DSR, FWER, target shuffling)
