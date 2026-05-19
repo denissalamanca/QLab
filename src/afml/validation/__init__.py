@@ -21,18 +21,20 @@ Public API:
   ties everything into a single Phase 6 gate.
 """
 
+from afml.validation.cohort import build_cohort_performance_matrices, count_cohort_trials
 from afml.validation.cpcv import (
     CombinatoriallyPurgedKFold,
     CPCVFold,
     construct_oos_paths,
 )
 from afml.validation.dsr import (
+    DSR_MIN_TRIALS,
     DSRResult,
     deflated_sharpe_ratio,
     expected_max_sharpe,
 )
 from afml.validation.fwer import bonferroni_threshold, holm_bonferroni
-from afml.validation.pbo import PBOResult, compute_pbo
+from afml.validation.pbo import MIN_COHORT_STRATEGIES, PBOResult, compute_pbo
 from afml.validation.pipeline import ValidationResult, validate_strategy
 from afml.validation.target_shuffling import (
     DataLeakageError,
@@ -41,6 +43,8 @@ from afml.validation.target_shuffling import (
 )
 
 __all__ = [
+    "DSR_MIN_TRIALS",
+    "MIN_COHORT_STRATEGIES",
     "CPCVFold",
     "CombinatoriallyPurgedKFold",
     "DSRResult",
@@ -49,8 +53,10 @@ __all__ = [
     "TargetShufflingResult",
     "ValidationResult",
     "bonferroni_threshold",
+    "build_cohort_performance_matrices",
     "compute_pbo",
     "construct_oos_paths",
+    "count_cohort_trials",
     "deflated_sharpe_ratio",
     "expected_max_sharpe",
     "holm_bonferroni",

@@ -176,7 +176,9 @@ def test_pipeline_passes_full_phase6_dod() -> None:
         t0,
         t1,
         realized,
-        n_trials=10,
+        # n_trials=50 ≥ DSR cold-start threshold (30), so the DSR is computed
+        # rather than quarantined (AFML Phase 0-6 audit V2).
+        n_trials=50,
         n_groups=6,
         n_test_groups=2,
         embargo_pct=0.01,
@@ -186,10 +188,37 @@ def test_pipeline_passes_full_phase6_dod() -> None:
         raise_on_leakage=False,
         dsr_threshold=0.5,
     )
+    assert not result.dsr.quarantined
     assert result.passes_phase6_dod, (
         f"PBO={result.pbo.pbo:.3f}, DSR={result.dsr.dsr:.3f}, "
         f"shuffle_p={result.target_shuffling.pvalue:.3f}"
     )
+
+
+@pytest.mark.phase6
+def test_pipeline_quarantines_on_cold_start() -> None:
+    """AFML Phase 0-6 audit V2 — with fewer than 30 trials the DSR is
+    quarantined and the strategy fails the Phase 6 gate regardless of PBO /
+    leakage outcomes."""
+    X, y, t0, t1, realized, candidates = _strong_signal_setup()
+    result = validate_strategy(
+        candidates,
+        X,
+        y,
+        t0,
+        t1,
+        realized,
+        n_trials=5,  # ≪ 30 → cold-start quarantine
+        n_groups=6,
+        n_test_groups=2,
+        n_shuffles=10,
+        sharpe_std_of_trials=0.3,
+        random_state=0,
+        raise_on_leakage=False,
+    )
+    assert result.dsr.quarantined is True
+    assert result.dsr.dsr == 0.0
+    assert result.passes_phase6_dod is False
 
 
 @pytest.mark.phase6

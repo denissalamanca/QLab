@@ -53,13 +53,17 @@ def test_dsr_low_on_pure_noise() -> None:
 @pytest.mark.phase6
 def test_dsr_higher_on_genuine_signal() -> None:
     """A return series with a strong positive mean must have higher DSR than
-    one with zero mean, all else equal."""
+    one with zero mean, all else equal.
+
+    ``min_trials=2`` bypasses the cold-start burn-in so we exercise the
+    deflation MATH directly (cold-start behaviour is tested separately).
+    """
     rng = np.random.default_rng(0)
     n_obs = 252
     noise = rng.normal(0.0, 0.01, n_obs)
     signal = rng.normal(0.002, 0.01, n_obs)  # ~3.2 annualized Sharpe
-    dsr_noise = deflated_sharpe_ratio(noise, n_trials=10).dsr
-    dsr_signal = deflated_sharpe_ratio(signal, n_trials=10).dsr
+    dsr_noise = deflated_sharpe_ratio(noise, n_trials=10, min_trials=2).dsr
+    dsr_signal = deflated_sharpe_ratio(signal, n_trials=10, min_trials=2).dsr
     assert dsr_signal > dsr_noise
 
 
@@ -67,7 +71,7 @@ def test_dsr_higher_on_genuine_signal() -> None:
 def test_dsr_returns_observed_sharpe_annualized() -> None:
     rng = np.random.default_rng(0)
     returns = rng.normal(0.001, 0.01, 252)
-    result = deflated_sharpe_ratio(returns, n_trials=10, periods_per_year=252)
+    result = deflated_sharpe_ratio(returns, n_trials=10, periods_per_year=252, min_trials=2)
     sharpe_period = float(np.mean(returns)) / float(np.std(returns, ddof=1))
     expected_annualized = sharpe_period * np.sqrt(252)
     assert np.isclose(result.sharpe_observed, expected_annualized, rtol=1e-9)
@@ -87,7 +91,43 @@ def test_dsr_rejects_bad_input() -> None:
 
 @pytest.mark.phase6
 def test_dsr_degenerate_returns_half() -> None:
-    """Zero-variance returns ⇒ DSR = 0.5 (no signal either way)."""
+    """Zero-variance returns ⇒ DSR = 0.5 (no signal either way).
+
+    Uses ``min_trials=2`` so the cold-start guard doesn't pre-empt the
+    degenerate-variance branch we're exercising here.
+    """
     returns = np.full(20, 0.001)
-    result = deflated_sharpe_ratio(returns, n_trials=5)
+    result = deflated_sharpe_ratio(returns, n_trials=5, min_trials=2)
     assert result.dsr == 0.5
+
+
+@pytest.mark.phase6
+def test_dsr_cold_start_quarantine_below_min_trials() -> None:
+    """AFML Phase 0-6 audit V2 — when the trial population is below the
+    burn-in threshold (default 30), the DSR is rejected: dsr=0.0,
+    quarantined=True, no division-by-zero."""
+    rng = np.random.default_rng(0)
+    returns = rng.normal(0.002, 0.01, 252)  # genuinely strong signal
+    result = deflated_sharpe_ratio(returns, n_trials=3)  # K = 3 ≪ 30
+    assert result.quarantined is True
+    assert result.dsr == 0.0
+    assert result.n_trials == 3
+
+
+@pytest.mark.phase6
+def test_dsr_not_quarantined_at_or_above_min_trials() -> None:
+    """At exactly K = 30 (the default threshold) the DSR is computed
+    normally — quarantined is False."""
+    rng = np.random.default_rng(0)
+    returns = rng.normal(0.002, 0.01, 252)
+    result = deflated_sharpe_ratio(returns, n_trials=30)
+    assert result.quarantined is False
+
+
+@pytest.mark.phase6
+def test_dsr_default_result_not_quarantined() -> None:
+    """A normally-computed DSR has quarantined=False by default."""
+    rng = np.random.default_rng(0)
+    returns = rng.normal(0.001, 0.01, 252)
+    result = deflated_sharpe_ratio(returns, n_trials=50)
+    assert result.quarantined is False

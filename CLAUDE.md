@@ -85,6 +85,13 @@ Integration gate: `make integration` runs `tests/integration/test_phase1_to_4.py
 - **V2 — strict embargoed outer evaluation.** ``train_brain_two`` uses ``PurgedWalkForwardCV`` for the OUTER train/holdout split with a per-fold ``max(train_t1) + embargo < min(holdout_t0)`` assertion via ``FoldDiagnostics.passes_index_intersection``.
 - **V3 — XGBoost mirror + sample-weight propagation.** When ``compare_with_xgboost=True`` (default), both SBRF and XGBoost get fit with ``sample_weight = ū_i`` and calibrated via purged CV. Tests verify weight propagation by comparing skewed-weight vs uniform-weight predictions.
 - **V2.1 — empty-MDA pass-through.** When Phase 4's circuit breaker fires (``X.shape[1] == 0``), ``train_brain_two`` returns a sentinel ``BrainTwoResult`` with ``halted_at_mda_upstream=True`` instead of crashing.
+- **Weight normalisation (pre-Phase-6 patch).** Uniqueness weights ``ū_i ∈ (0,1]`` are normalised to sum to ``N`` (``ū_i × N/Σū_i``) before any estimator fit — ``afml.modeling.calibration._normalize_sample_weights``. Prevents XGBoost ``min_child_weight`` vanishing-gradient suppression. Scale-invariant for sklearn trees.
+
+## Phase 6 validation contracts (AFML 0-6 audit)
+
+- **V1 — PBO needs a cohort.** ``compute_pbo`` rejects single-strategy (n×1) matrices — PBO is a *relative* statistic. Build the multi-strategy matrix via ``afml.validation.build_cohort_performance_matrices`` (runs a registry cohort through CPCV) and size the cohort with ``count_cohort_trials(registry, asset, family)``.
+- **V2 — DSR cold-start breaker.** ``deflated_sharpe_ratio`` rejects when ``n_trials < DSR_MIN_TRIALS`` (=30): returns ``dsr=0.0``, ``quarantined=True``, logs ``"Insufficient trials for DSR (K<30). Auto-Quarantine."``. ``ValidationResult.passes_phase6_dod`` hard-fails on quarantine.
+- **V3 — non-contiguous CPCV embargo.** ``CombinatoriallyPurgedKFold`` applies purge + embargo to the right boundary of *each contiguous test block*, not the global ``max(t1)``. A combination testing groups {0, 2} embargoes both group-0's and group-2's right edges, protecting the middle training block (group 1).
 
 ## Workflow — PR per milestone
 

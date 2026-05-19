@@ -43,9 +43,18 @@ from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
+import structlog
 from scipy.stats import norm
 
 EULER_MASCHERONI: float = 0.5772156649015329
+# AFML Phase 0-6 audit V2 — cold-start burn-in. The Expected-Max-Sharpe
+# deflation requires a statistically meaningful population of trial Sharpes.
+# Below this count the cross-sectional variance is noise (or zero), which
+# either divides-by-zero or — worse — inflates the DSR and lets an
+# unvalidated strategy slip into production. We hard-reject the calculation.
+DSR_MIN_TRIALS: int = 30
+
+_log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +75,11 @@ class DSRResult:
         Multiple-testing denominator (from the Alpha Registry trial count).
     n_observations
         Length of the return series feeding the Sharpe.
+    quarantined
+        AFML Phase 0-6 audit V2 — ``True`` iff the DSR was rejected because
+        the trial population was below the cold-start burn-in
+        (:data:`DSR_MIN_TRIALS`). A quarantined result carries ``dsr = 0.0``
+        and must NOT be deployed.
     """
 
     dsr: float
@@ -73,6 +87,7 @@ class DSRResult:
     expected_max_sharpe: float
     n_trials: int
     n_observations: int
+    quarantined: bool = False
 
 
 def expected_max_sharpe(
@@ -117,6 +132,7 @@ def deflated_sharpe_ratio(
     *,
     sharpe_std_of_trials: float | None = None,
     periods_per_year: int = 252,
+    min_trials: int = DSR_MIN_TRIALS,
 ) -> DSRResult:
     """Compute the Deflated Sharpe Ratio from a return series.
 
@@ -137,6 +153,13 @@ def deflated_sharpe_ratio(
     periods_per_year
         Annualisation factor (252 = daily trading days; 12 = monthly;
         1 = pre-annualised).
+    min_trials
+        AFML Phase 0-6 audit V2 cold-start burn-in. If ``n_trials <
+        min_trials`` (default :data:`DSR_MIN_TRIALS` = 30) the trial
+        population is statistically too small to estimate the Expected-Max-
+        Sharpe deflation; the function **rejects** the calculation, returns
+        ``dsr = 0.0`` with ``quarantined=True``, and logs a warning. The
+        caller MUST treat a quarantined result as non-deployable.
 
     Returns
     -------
@@ -151,6 +174,27 @@ def deflated_sharpe_ratio(
         raise ValueError(f"n_trials must be ≥ 1, got {n_trials}")
 
     n = r.size
+
+    # AFML Phase 0-6 audit V2 — cold-start circuit breaker. Reject the DSR
+    # outright when the trial population is below the burn-in threshold; the
+    # cross-sectional Sharpe variance would be noise (or zero) and either
+    # divide-by-zero or artificially inflate the deflated significance.
+    if n_trials < min_trials:
+        _log.warning(
+            "dsr_cold_start_quarantine",
+            n_trials=n_trials,
+            min_trials=min_trials,
+            message=f"Insufficient trials for DSR (K<{min_trials}). Auto-Quarantine.",
+        )
+        return DSRResult(
+            dsr=0.0,
+            sharpe_observed=0.0,
+            expected_max_sharpe=float("nan"),
+            n_trials=n_trials,
+            n_observations=n,
+            quarantined=True,
+        )
+
     mean = float(r.mean())
     std = float(r.std(ddof=1))
     # numpy 2-pass std leaves ~ULP-level residual when the series is constant;

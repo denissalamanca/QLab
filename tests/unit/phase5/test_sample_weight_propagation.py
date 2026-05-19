@@ -8,6 +8,10 @@ Verification strategy: train two otherwise-identical estimators, one with
 ``sample_weight`` set to a deliberately non-uniform vector that zeroes out
 half the rows, the other with uniform weights. If sample_weight propagates,
 their predictions must differ.
+
+This file ALSO carries the Phase 0-6 audit §1.1 verification of the
+uniqueness-weight normalisation (``normalized = ū_i × N / Σū_i``), which the
+auditor asked to live specifically here.
 """
 
 from __future__ import annotations
@@ -22,6 +26,24 @@ from afml.modeling import (
     fit_calibrated_sbrf_with_purged_cv,
     indicator_matrix,
 )
+from afml.modeling.calibration import _normalize_sample_weights
+
+
+@pytest.mark.phase5
+def test_uniqueness_weights_normalized_to_sum_n() -> None:
+    """AFML Phase 0-6 audit §1.1 — the uniqueness-weight normaliser must
+    rescale fractional ū_i so the aggregate equals N (the sample count),
+    matching the audit formula ``normalized = ū_i × N / Σū_i``. This
+    prevents XGBoost ``min_child_weight`` violations / vanishing gradients."""
+    rng = np.random.default_rng(0)
+    n = 500
+    u = rng.uniform(0.05, 1.0, size=n)  # fractional uniqueness weights ∈ (0, 1]
+    normalized = _normalize_sample_weights(u)
+    # Audit formula: sum of normalized weights equals N.
+    assert np.isclose(normalized.sum(), float(n))
+    # Reference formula reproduced explicitly.
+    expected = u * (len(u) / np.sum(u))
+    np.testing.assert_allclose(normalized, expected)
 
 
 @pytest.mark.phase5
