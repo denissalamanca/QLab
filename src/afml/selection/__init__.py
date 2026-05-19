@@ -42,13 +42,18 @@ from afml.selection.clustering import ONCResult, cluster_features_onc
 from afml.selection.distance import afml_distance_matrix
 from afml.selection.mda import ClusteredMDAResult, clustered_mda
 from afml.selection.pipeline import SelectionResult, select_features
-from afml.selection.purged_kfold import PurgedKFold, PurgedWalkForwardCV
+from afml.selection.purged_kfold import (
+    PurgedKFold,
+    PurgedKFoldSklearn,
+    PurgedWalkForwardCV,
+)
 from afml.selection.sfi import SFIResult, single_feature_importance
 
 __all__ = [
     "ClusteredMDAResult",
     "ONCResult",
     "PurgedKFold",
+    "PurgedKFoldSklearn",
     "PurgedWalkForwardCV",
     "SFIResult",
     "SelectionResult",
