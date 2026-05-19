@@ -27,8 +27,8 @@ When the PRD and Blueprint disagree, the Blueprint wins (it's the engineering co
 | 5 | Meta-Labeling / Brain 2 | Agent 5 | ✅ shipped | §7 | [#9](https://github.com/denissalamanca/QLab/pull/9) |
 | 6 | Validation / CPCV / DSR | Agent 6 | ✅ shipped | §8 | [#12](https://github.com/denissalamanca/QLab/pull/12) |
 | 7 | Bet Sizing & Execution | Agent 7 | ✅ shipped | §9 | [#15](https://github.com/denissalamanca/QLab/pull/15) |
-| 8 | MLOps / Structural Breaks | Agent 8 | next | §10 | — |
-| 9 | Control Plane (React/FastAPI) | — | pending | §11 | — |
+| 8 | MLOps / Structural Breaks | Agent 8 | ✅ shipped | §10 | [#16](https://github.com/denissalamanca/QLab/pull/16) |
+| 9 | Control Plane (React/FastAPI) | — | next | §11 | — |
 
 **Strict phase-by-phase build.** `make phase{N-1}` must be green before any code is written for phase N. No vertical-slice shortcuts. No relaxing of unit-test assertions to make them pass — fix the underlying code.
 
@@ -86,6 +86,13 @@ Integration gate: `make integration` runs `tests/integration/test_phase1_to_4.py
 - **V3 — XGBoost mirror + sample-weight propagation.** When ``compare_with_xgboost=True`` (default), both SBRF and XGBoost get fit with ``sample_weight = ū_i`` and calibrated via purged CV. Tests verify weight propagation by comparing skewed-weight vs uniform-weight predictions.
 - **V2.1 — empty-MDA pass-through.** When Phase 4's circuit breaker fires (``X.shape[1] == 0``), ``train_brain_two`` returns a sentinel ``BrainTwoResult`` with ``halted_at_mda_upstream=True`` instead of crashing.
 - **Weight normalisation (pre-Phase-6 patch).** Uniqueness weights ``ū_i ∈ (0,1]`` are normalised to sum to ``N`` (``ū_i × N/Σū_i``) before any estimator fit — ``afml.modeling.calibration._normalize_sample_weights``. Prevents XGBoost ``min_child_weight`` vanishing-gradient suppression. Scale-invariant for sklearn trees.
+
+## Phase 8 monitoring contracts (Blueprint §10)
+
+- **GSADF (primary).** ``afml.monitoring.detect_bubble`` — Phillips-Wu-Yu 2011 double-sup ADF over all sub-windows (numba-JIT inner ADF), Monte-Carlo critical value under the random-walk null. ``is_bubble`` (stat > 95% crit) → ``MarketRegimeBreak`` event → halt Agent 7.
+- **Chow (secondary).** ``chow_break_test`` — F-test for a break in the DF/AR(1) regression at a candidate point. Confirming diagnostic; GSADF is the decision-maker.
+- **SHAP drift.** ``compute_shap_importance`` (mean |SHAP| per feature) + ``spearman_rank_correlation``; ``detect_concept_drift`` fires when rank corr < 0.5 → ``ConceptDriftAlert``.
+- **Monitor.** ``StructuralBreakMonitor.check_regime`` / ``check_drift`` produce the Phase 0 event objects (``MarketRegimeBreak`` / ``ConceptDriftAlert``) for the agent runtime to publish — transport-free, unit-testable.
 
 ## Phase 7 execution contracts (Blueprint §9)
 
