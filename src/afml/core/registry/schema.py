@@ -81,6 +81,11 @@ class Experiment(Base):
         nullable=False,
         index=True,
     )
+    # Phase 6 validation outcomes — populated by ``record_validation`` once a
+    # strategy clears CPCV. Drive the Phase 9 sign-off dashboard. ``None``
+    # until the strategy has been through validation.
+    pbo: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dsr: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     __table_args__ = (
         UniqueConstraint(

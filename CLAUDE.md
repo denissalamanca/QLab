@@ -28,7 +28,7 @@ When the PRD and Blueprint disagree, the Blueprint wins (it's the engineering co
 | 6 | Validation / CPCV / DSR | Agent 6 | ✅ shipped | §8 | [#12](https://github.com/denissalamanca/QLab/pull/12) |
 | 7 | Bet Sizing & Execution | Agent 7 | ✅ shipped | §9 | [#15](https://github.com/denissalamanca/QLab/pull/15) |
 | 8 | MLOps / Structural Breaks | Agent 8 | ✅ shipped | §10 | [#16](https://github.com/denissalamanca/QLab/pull/16) |
-| 9 | Control Plane (React/FastAPI) | — | next | §11 | — |
+| 9 | Control Plane (React/FastAPI) | — | ✅ shipped | §11 | [#18](https://github.com/denissalamanca/QLab/pull/18) |
 
 **Strict phase-by-phase build.** `make phase{N-1}` must be green before any code is written for phase N. No vertical-slice shortcuts. No relaxing of unit-test assertions to make them pass — fix the underlying code.
 
@@ -107,6 +107,20 @@ Integration gate: `make integration` runs `tests/integration/test_phase1_to_4.py
 - **V1 — PBO needs a cohort.** ``compute_pbo`` rejects single-strategy (n×1) matrices — PBO is a *relative* statistic. Build the multi-strategy matrix via ``afml.validation.build_cohort_performance_matrices`` (runs a registry cohort through CPCV) and size the cohort with ``count_cohort_trials(registry, asset, family)``.
 - **V2 — DSR cold-start breaker.** ``deflated_sharpe_ratio`` rejects when ``n_trials < DSR_MIN_TRIALS`` (=30): returns ``dsr=0.0``, ``quarantined=True``, logs ``"Insufficient trials for DSR (K<30). Auto-Quarantine."``. ``ValidationResult.passes_phase6_dod`` hard-fails on quarantine.
 - **V3 — non-contiguous CPCV embargo.** ``CombinatoriallyPurgedKFold`` applies purge + embargo to the right boundary of *each contiguous test block*, not the global ``max(t1)``. A combination testing groups {0, 2} embargoes both group-0's and group-2's right edges, protecting the middle training block (group 1).
+
+## Phase 9 control-plane contracts (Blueprint §11)
+
+The CEO Human-in-the-Loop governance layer. **Testable, type-checked logic lives in ``src/afml/control_plane/``** (covered by ``make phase9`` / mypy strict); ``apps/api/main.py`` is a thin production ASGI entry, and ``apps/web/`` is the React frontend (validated by its own Node toolchain, not the Python gate).
+
+- **Two trust levels, matching the Phase 0 event contracts.**
+  - **Approve** (``CEOApproval``) commits capital → requires a valid Ed25519 signature over ``afml:approve:<experiment_id>`` **AND** a live TOTP code (§11.2 mandatory 2FA).
+  - **Flatten** (``EmergencyFlatten``) is a risk-*reducing* kill-switch → requires the signature over ``afml:flatten:<nonce>`` only (never blocked by a TOTP window), plus a per-nonce replay guard.
+- **Keys.** The server holds only the CEO **public** key (verification) + the TOTP secret (from the Keychain). The **private key never enters the server or the browser** — the CEO signs on their own device and pastes the signature. ``CEOAuthenticator`` (``src/afml/control_plane/security.py``) is the single verification seam; failures raise ``CEOAuthError`` subclasses → HTTP 403.
+- **Endpoints (``/api/v1``).** ``GET /registry/strategies`` → ``AlphaRegistryRepository.awaiting_signoff()`` (``completed`` status, ``pbo``/``dsr`` populated, not deployed). ``POST /execution/approve`` → verify → ``mark_deployed`` + publish ``CEOApproval``. ``POST /emergency/flatten`` → verify → ``ExecutionEngine.emergency_flatten`` (closes all + resets risk budget) + publish ``EmergencyFlatten``.
+- **Registry extension.** ``Experiment`` gained nullable ``pbo``/``dsr`` columns; ``record_validation(experiment_id, *, pbo, dsr)`` populates them (Phase 6 → Phase 9 handoff). Backward-compatible (additive nullable columns).
+- **DI + transport seam.** ``ControlPlaneDeps`` bundles repository + execution engine + authenticator + ``EventPublisher``. Default ``InMemoryEventPublisher`` records events for tests; production swaps a Redis-backed publisher. ``create_app(deps)`` stashes them on ``app.state`` — tests inject in-memory doubles, no Redis/Keychain/real broker.
+- **Crypto primitives** live in ``src/afml/crypto/`` (``signing`` Ed25519, ``totp`` RFC 6238, ``keychain`` ``keyring`` façade), re-exported from ``afml.crypto``.
+- **Frontend** (``apps/web/``): React 18 + Vite + TS + Tailwind + shadcn-style UI + Recharts (PBO/DSR ship-gate charts). ``npm run typecheck`` / ``npm run build`` / ``npm run e2e`` (Playwright) all green; the approval-flow E2E mocks the API and asserts the §11.1 request contract.
 
 ## Workflow — PR per milestone
 
