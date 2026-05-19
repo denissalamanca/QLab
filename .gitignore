@@ -46,16 +46,33 @@ htmlcov/
 .pyre/
 .pytype/
 
-# IDE
+# IDE / editors
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
+*.bak
+.~lock.*
 
 # OS
 .DS_Store
 Thumbs.db
+.AppleDouble
+.LSOverride
+._*
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Logs (agents, control plane, runtime)
+*.log
+logs/
+
+# Profiling / perf
+*.prof
+*.lprof
+*.pstats
 
 # Local databases / data
 *.db
@@ -66,17 +83,30 @@ Thumbs.db
 data/local/
 artifacts/
 
-# Secrets
+# Model & feature artifacts (Phase 1+ produces large parquet/pickle outputs locally)
+*.pkl
+*.joblib
+*.onnx
+features_*.parquet
+bars_*.parquet
+ffd_*.parquet
+models_local/
+
+# Secrets / keys (Ed25519 keypair, broker tokens, TOTP seed)
 .env
 .env.*
 !.env.example
 *.pem
 *.key
+*.p12
+keystore/
 
-# Frontend
+# Frontend (Phase 9)
 node_modules/
 apps/web/dist/
 apps/web/.vite/
+apps/web/.turbo/
+apps/web/coverage/
 
 # Phase sign-off ledgers (recreated per phase, not checked in mid-build)
 PHASE_*_SIGNOFF.md
