@@ -21,8 +21,8 @@ When the PRD and Blueprint disagree, the Blueprint wins (it's the engineering co
 |---|---|---|---|---|---|
 | 0 | Orchestration & Alpha Registry | — | ✅ shipped | §2 | [#1](https://github.com/denissalamanca/QLab/pull/1) |
 | 1 | Structural Data Engineering | Agent 1 | ✅ shipped | §3 | [#3](https://github.com/denissalamanca/QLab/pull/3) |
-| 2 | Primary Signals / Brain 1 | Agent 2 | next | §4 | — |
-| 3 | Microstructure Features | Agent 3 | pending | §5 | — |
+| 2 | Primary Signals / Brain 1 | Agent 2 | ✅ shipped | §4 | [#4](https://github.com/denissalamanca/QLab/pull/4) |
+| 3 | Microstructure Features | Agent 3 | next | §5 | — |
 | 4 | Feature Selection & ONC | Agent 4 | pending | §6 | — |
 | 5 | Meta-Labeling / Brain 2 | Agent 5 | pending | §7 | — |
 | 6 | Validation / CPCV / DSR | Agent 6 | pending | §8 | — |
