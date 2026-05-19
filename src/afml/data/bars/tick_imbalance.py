@@ -8,8 +8,18 @@ Tick sign ``b_t`` is +1 if the trade was at a higher price than the previous,
 Cumulative imbalance: ``θ_t = Σ_{i ≤ t} b_i`` (reset at each bar).
 
 A new bar is sampled when ``|θ_t| ≥ E_0[T] · |2 P[b_t = +1] − 1|``, where:
-- ``E_0[T]``  = EWMA of ticks-per-bar from prior bars (adaptive).
-- ``P[b_t = +1]`` = EWMA of the fraction of +1 ticks (adaptive).
+- ``E_0[T]``  = EWMA of ticks-per-bar from **previously completed bars only**.
+- ``P[b_t = +1]`` = EWMA of the fraction of +1 ticks from previously closed bars.
+
+**Causal-update invariant (AFML audit Vulnerability 3):**
+The threshold a forming bar k sees is fully determined at the close of bar
+k-1 — both EMAs are last updated at that point and are read-only during bar k.
+EMA values are advanced ONLY at the moment a bar closes, using that bar's
+just-finalized statistics; bar k+1 then sees the newly-updated EMAs.
+``tests/unit/phase1/test_tick_imbalance.py::test_tib_truncation_invariance``
+proves this by checking that bar closes computed on a full tick series match
+those computed on a truncated prefix for every bar that closes before the
+truncation point.
 
 Initial values are deliberately chosen so the first few bars warm up the EWMAs
 quickly without runaway behavior. There are no hard-coded scale parameters —

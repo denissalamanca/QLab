@@ -10,6 +10,12 @@ Pipeline per Blueprint §4:
 
 The result list lets Phase 3 (feature engineering) and Phase 5 (Brain 2)
 consume the labeled events without re-running anything upstream.
+
+``merge_brain1_events`` (AFML audit §2.2 — Dual-Path Cleanliness) is the
+canonical entry point for Phase 5 / Brain 2: it concatenates events from every
+plugin, sorts chronologically, and dedupes by timestamp (keeping the first
+plugin's verdict on collisions). The output is guaranteed to be unique and
+monotonically increasing in time.
 """
 
 from __future__ import annotations
@@ -113,3 +119,52 @@ def run_brain1(
         )
 
     return results
+
+
+def merge_brain1_events(results: Sequence[Brain1Result]) -> pl.DataFrame:
+    """Merge events from multiple primary-alpha plugins into a single dedup'd set.
+
+    AFML audit §2.2 (Event-Sampling Deduplication / Dual-Path Cleanliness):
+    the array of event timestamps passed downstream to Phase 3 features and
+    Phase 5 Brain 2 must contain only unique, monotonically-increasing
+    datetime indices. Multiple plugins triggering on the same bar must
+    collapse to a single event.
+
+    Resolution rule on a timestamp collision: keep the first plugin's verdict
+    in the iteration order of ``results``. Document the priority by ordering
+    plugins deliberately when assembling the input list.
+
+    Parameters
+    ----------
+    results : list of ``Brain1Result`` from ``run_brain1``.
+
+    Returns
+    -------
+    Polars DataFrame with columns ``timestamp`` (unique, sorted ascending),
+    ``side`` (``"long"`` / ``"short"``), and ``plugin_family`` (which plugin's
+    verdict was kept). Empty schema-correct frame if ``results`` is empty.
+    """
+    empty_schema: dict[str, pl.DataType] = {
+        "timestamp": pl.Datetime("ms", "UTC"),
+        "side": pl.Utf8(),
+        "plugin_family": pl.Utf8(),
+    }
+    if not results:
+        return pl.DataFrame(schema=empty_schema)
+
+    framed = [
+        r.events.with_columns(pl.lit(r.plugin_family).alias("plugin_family"))
+        for r in results
+        if r.events.height > 0
+    ]
+    if not framed:
+        return pl.DataFrame(schema=empty_schema)
+
+    combined = pl.concat(framed, how="vertical_relaxed")
+    deduped = (
+        combined
+        .sort("timestamp", maintain_order=True)
+        .unique(subset=["timestamp"], keep="first", maintain_order=True)
+        .sort("timestamp")
+    )
+    return deduped

@@ -6,16 +6,27 @@ For each Brain 1 event we place three barriers around the entry price:
 - **Lower** barrier:  ``entry · (1 - stop_loss_mult · σ_t)``
 - **Vertical** barrier: ``vertical_barrier_bars`` bars after the event
 
-where ``σ_t`` is the causal EWM volatility at the event time. **No fixed pips,
-no fixed prices** — every barrier self-scales to the local volatility regime.
+where ``σ_t`` is the causal EWM volatility at the event time (Vulnerability 4 of
+the AFML audit — handled by ``afml.labeling.volatility.ewm_volatility``'s
+``causal_shift=True`` default). **No fixed pips, no fixed prices** — every
+barrier self-scales to the local volatility regime.
+
+Intra-bar barrier touch detection (AFML audit Vulnerability 1 — path-dependency):
+- Barrier touches are checked against each bar's **high** and **low**, NOT just
+  ``close``. A price spike that pierces the stop-loss mid-bar must register as
+  a stop hit even if the bar closes back inside the barriers.
+- **Conflict-resolution rule:** when a single bar's high ≥ upper AND its low ≤
+  lower (a dual-touch wide bar), we conservatively treat the event as a
+  stop-loss hit (``label = 0``). Penalizing ambiguity → conservative risk
+  modeling.
 
 Labeling (binary meta-label):
 - ``y = 1`` if the entry's *intended direction* succeeds:
   - long  + upper hit first
   - short + lower hit first
-- ``y = 0`` otherwise (stop hit against the position, or vertical horizon
-  reached with a non-favorable outcome). Brain 2 will learn to predict
-  ``P(y = 1 | features)``.
+- ``y = 0`` otherwise (stop hit against the position, dual-touch ambiguity, or
+  vertical horizon reached with a non-favorable outcome). Brain 2 will learn to
+  predict ``P(y = 1 | features)``.
 """
 
 from __future__ import annotations
@@ -61,34 +72,60 @@ class TripleBarrierLabels:
 
 @numba.njit(cache=True)
 def _label_one(
-    prices: npt.NDArray[np.float64],
+    high: npt.NDArray[np.float64],
+    low: npt.NDArray[np.float64],
+    close: npt.NDArray[np.float64],
     event_idx: int,
     side: int,
     upper: float,
     lower: float,
     horizon_end: int,
-) -> tuple[int, int, int, float]:
+) -> tuple[int, int, int, float, float]:
     """Simulate forward from ``event_idx`` until a barrier is hit.
 
-    Returns ``(label, barrier_code, exit_idx, return_pct)``:
-    - barrier_code: 0 = vertical, 1 = upper, 2 = lower
-    - label: 1 if outcome matches ``side``, else 0
-    - return_pct: signed return from entry to exit
+    Intra-bar touch detection: ``high[i] ≥ upper`` triggers the upper barrier;
+    ``low[i] ≤ lower`` triggers the lower barrier. If a single bar touches BOTH,
+    we conservatively treat it as a stop-loss (label = 0) per the AFML audit
+    conflict-resolution rule.
+
+    Returns
+    -------
+    ``(label, barrier_code, exit_idx, return_pct, exit_price)``:
+    - ``barrier_code``: 0 = vertical, 1 = upper, 2 = lower
+    - ``label``: 1 if outcome matches ``side``, else 0
+    - ``exit_price``: the barrier price (upper or lower) at hit, or close at
+      vertical — i.e., the price a real fill would have realized.
     """
-    entry = prices[event_idx]
-    end = horizon_end if horizon_end < prices.shape[0] else prices.shape[0] - 1
+    entry = close[event_idx]
+    end = horizon_end if horizon_end < high.shape[0] else high.shape[0] - 1
+
     for i in range(event_idx + 1, end + 1):
-        p = prices[i]
-        if p >= upper:
-            ret = (p - entry) / entry
+        upper_touched = high[i] >= upper
+        lower_touched = low[i] <= lower
+
+        if upper_touched and lower_touched:
+            # Dual touch in a single bar → conservative stop-loss.
+            # For long  positions, stop = lower; for short positions, stop = upper.
+            if side == 1:
+                exit_price = lower
+                return 0, 2, i, (exit_price - entry) / entry, exit_price
+            else:
+                exit_price = upper
+                return 0, 1, i, (exit_price - entry) / entry, exit_price
+
+        if upper_touched:
+            exit_price = upper
             label = 1 if side == 1 else 0
-            return label, 1, i, ret
-        if p <= lower:
-            ret = (p - entry) / entry
+            return label, 1, i, (exit_price - entry) / entry, exit_price
+
+        if lower_touched:
+            exit_price = lower
             label = 1 if side == -1 else 0
-            return label, 2, i, ret
-    final = prices[end]
-    return 0, 0, end, (final - entry) / entry
+            return label, 2, i, (exit_price - entry) / entry, exit_price
+
+    # Vertical barrier — exit at the final close.
+    final = close[end]
+    return 0, 0, end, (final - entry) / entry, final
 
 
 def apply_triple_barrier(  # noqa: PLR0915 — single-pass linear bookkeeping; splitting hurts readability
@@ -130,6 +167,17 @@ def apply_triple_barrier(  # noqa: PLR0915 — single-pass linear bookkeeping; s
     bar_ts_dtype = bars_sorted["timestamp"].dtype
     bar_ts = bars_sorted["timestamp"].to_numpy()
     close = bars_sorted["close"].to_numpy().astype(np.float64)
+    # AFML audit V1: intra-bar high/low drive barrier-touch detection. If a
+    # bar frame lacks H/L (e.g., minimal test fixture) fall back to close — the
+    # caller is responsible for supplying genuine OHLC in production.
+    high = (
+        bars_sorted["high"].to_numpy().astype(np.float64)
+        if "high" in bars_sorted.columns
+        else close
+    )
+    low = (
+        bars_sorted["low"].to_numpy().astype(np.float64) if "low" in bars_sorted.columns else close
+    )
     n = close.shape[0]
 
     # EWM volatility on log-returns (causal).
@@ -175,8 +223,8 @@ def apply_triple_barrier(  # noqa: PLR0915 — single-pass linear bookkeeping; s
         lower = entry * (1.0 - stop_loss_mult * sigma)
         horizon_end = idx + vertical_barrier_bars
 
-        label, barrier_code, exit_idx, ret_pct = _label_one(
-            close, idx, side_int, upper, lower, horizon_end
+        label, barrier_code, _exit_idx, ret_pct, exit_price = _label_one(
+            high, low, close, idx, side_int, upper, lower, horizon_end
         )
         barrier_str = {0: "vertical", 1: "upper", 2: "lower"}[barrier_code]
 
@@ -187,7 +235,7 @@ def apply_triple_barrier(  # noqa: PLR0915 — single-pass linear bookkeeping; s
         out_upper.append(float(upper))
         out_lower.append(float(lower))
         out_barrier.append(barrier_str)
-        out_exit_price.append(float(close[exit_idx]))
+        out_exit_price.append(float(exit_price))
         out_return.append(float(ret_pct))
         out_label.append(int(label))
 
