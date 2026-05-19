@@ -35,10 +35,24 @@ import numpy.typing as npt
 # Minimum regression length: intercept + lag-1 term needs ≥ 3 points for a
 # finite t-stat (dof = m - 2 ≥ 1).
 MIN_REGRESSION_POINTS: int = 3
+# AFML 0-8 final audit V2: an absolute floor on the GSADF minimum window
+# (r0) so the inner OLS always has enough degrees of freedom. A window below
+# this is statistically meaningless and risks degenerate regressions; series
+# shorter than this floor return "no bubble" rather than attempting to fit.
+MIN_WINDOW_OBSERVATIONS: int = 20
 DEFAULT_MIN_WINDOW_FRAC: float = 0.2
 DEFAULT_N_SIMULATIONS: int = 199
 DEFAULT_QUANTILE: float = 0.95
 _TINY: float = 1e-12
+
+
+def _effective_min_window(n: int, min_window_frac: float) -> int:
+    """Resolve the GSADF minimum window with the absolute floor enforced.
+
+    ``r0 = max(MIN_WINDOW_OBSERVATIONS, ⌊min_window_frac · n⌋)`` — never below
+    the audit floor, so the OLS degrees-of-freedom guarantee always holds.
+    """
+    return max(MIN_WINDOW_OBSERVATIONS, int(np.floor(min_window_frac * n)))
 
 
 @numba.njit(cache=True)
@@ -123,9 +137,11 @@ def gsadf_statistic(
     if not np.all(np.isfinite(y)):
         raise ValueError("series must be finite")
     n = y.size
-    min_window = max(MIN_REGRESSION_POINTS, int(np.floor(min_window_frac * n)))
+    min_window = _effective_min_window(n, min_window_frac)
+    # AFML 0-8 final audit V2: too short for a meaningful regression — return
+    # 0.0 (no explosive evidence) rather than attempting a degenerate OLS.
     if n < min_window:
-        raise ValueError(f"series length {n} below min_window {min_window}")
+        return 0.0
     return float(_gsadf_statistic(y, min_window))
 
 
@@ -147,7 +163,7 @@ def gsadf_critical_value(
         raise ValueError(f"n must be ≥ {MIN_REGRESSION_POINTS}, got {n}")
     if not 0.0 < quantile < 1.0:
         raise ValueError(f"quantile must be in (0, 1), got {quantile}")
-    min_window = max(MIN_REGRESSION_POINTS, int(np.floor(min_window_frac * n)))
+    min_window = _effective_min_window(n, min_window_frac)
     rng = np.random.default_rng(random_state)
     stats = np.empty(n_simulations, dtype=np.float64)
     for s in range(n_simulations):
@@ -192,9 +208,25 @@ def detect_bubble(
     This is the single entry point the Phase 8 monitor calls per asset.
     """
     y = np.asarray(series, dtype=np.float64)
+    if y.ndim != 1:
+        raise ValueError(f"series must be 1-D, got shape {y.shape}")
+    if not np.all(np.isfinite(y)):
+        raise ValueError("series must be finite")
+    n = y.size
+    min_window = _effective_min_window(n, min_window_frac)
+    # AFML 0-8 final audit V2: a series shorter than the minimum window can't
+    # support the GSADF regressions — return "no bubble" safely without
+    # touching the (expensive, and here undefined) Monte-Carlo critical value.
+    if n < min_window:
+        return BubbleDetectionResult(
+            gsadf_statistic=0.0,
+            critical_value=float("inf"),
+            is_bubble=False,
+            quantile=quantile,
+        )
     stat = gsadf_statistic(y, min_window_frac=min_window_frac)
     crit = gsadf_critical_value(
-        y.size,
+        n,
         min_window_frac=min_window_frac,
         n_simulations=n_simulations,
         quantile=quantile,

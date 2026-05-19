@@ -154,3 +154,18 @@ class RiskEngine:
     def reset(self) -> None:
         """Clear committed margin (e.g. at the start of a new trading session)."""
         self._committed_margin = 0.0
+
+    def rehydrate_committed_margin(self, margin: float) -> None:
+        """Seed the committed-margin total from the broker's open positions.
+
+        AFML 0-8 final audit V4: on a restart the in-memory committed-margin
+        total resets to 0, but the broker may still hold open positions
+        consuming margin. Without rehydration the engine would size new bets
+        against the *full* drawdown buffer and over-commit, breaching
+        FTMO / ESMA limits. The execution engine calls this at startup with
+        the summed margin of ``broker.get_open_positions()`` so the budget
+        reflects reality before any new signal is processed.
+        """
+        if margin < 0.0:
+            raise ValueError(f"rehydrated margin must be ≥ 0, got {margin}")
+        self._committed_margin = margin

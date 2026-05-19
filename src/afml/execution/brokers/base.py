@@ -99,6 +99,17 @@ class BrokerAdapter(ABC):
     def open_positions(self) -> list[Position]:
         """All currently-open positions."""
 
+    def get_open_positions(self) -> list[Position]:
+        """Canonical accessor used by the execution engine's startup
+        rehydration (AFML 0-8 final audit V4).
+
+        Defaults to :meth:`open_positions`; live adapters may override to add
+        a fresh broker round-trip (rather than returning a cached view) so the
+        rehydrated concurrent-position count reflects the broker's true state
+        after a restart.
+        """
+        return self.open_positions()
+
     @abstractmethod
     def close_position(self, asset: str, reference_price: float) -> Fill | None:
         """Close the open position on ``asset``. Returns the closing fill, or

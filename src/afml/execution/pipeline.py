@@ -65,6 +65,22 @@ class DispatchResult:
         return len(self.sized_bets)
 
 
+@dataclass(frozen=True, slots=True)
+class RehydrationResult:
+    """Outcome of :meth:`ExecutionEngine.rehydrate_state`.
+
+    Attributes
+    ----------
+    n_open_positions
+        Concurrent positions discovered at the broker on startup.
+    rehydrated_margin
+        Total margin those positions commit — seeded into the risk engine.
+    """
+
+    n_open_positions: int
+    rehydrated_margin: float
+
+
 @dataclass(slots=True)
 class ExecutionEngine:
     """Sizes and dispatches a batch of Brain-2 signals under risk limits.
@@ -85,6 +101,30 @@ class ExecutionEngine:
     risk_engine: RiskEngine
     min_margin: float = 1e-9
     _dispatched: list[Fill] = field(default_factory=list)
+
+    def rehydrate_state(self) -> RehydrationResult:
+        """Restore concurrent-position state from the broker on startup.
+
+        AFML 0-8 final audit V4: Agent 7 sizes bets against the FTMO drawdown
+        buffer using its running committed-margin total. After a restart /
+        crash that total is 0 in memory, but the broker may still hold open
+        positions. Querying ``broker.get_open_positions()`` and seeding the
+        risk engine with their summed margin prevents the engine from
+        over-sizing the next signal and breaching the margin limits because it
+        "forgot" the live book.
+
+        Call this once, immediately after ``broker.connect()``, before the
+        first :meth:`execute_batch`.
+        """
+        if not self.broker.is_connected():
+            raise RuntimeError("broker not connected — call broker.connect() first")
+        positions = self.broker.get_open_positions()
+        total_margin = float(sum(p.margin for p in positions))
+        self.risk_engine.rehydrate_committed_margin(total_margin)
+        return RehydrationResult(
+            n_open_positions=len(positions),
+            rehydrated_margin=total_margin,
+        )
 
     def execute_batch(self, signals: list[Signal], *, random_state: int = 0) -> DispatchResult:
         """Size, risk-check, and dispatch a batch of signals.

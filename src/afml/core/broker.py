@@ -11,6 +11,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import orjson
 import redis.asyncio as aioredis
 from pydantic import TypeAdapter
@@ -23,6 +24,49 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _event_adapter: TypeAdapter[Event] = TypeAdapter(Event)
+
+# AFML 0-8 final audit V3: the inter-agent bus carries ML artifacts —
+# Feature matrices (Phase 3), probability arrays (Phase 5), sized bets
+# (Phase 7) — that are heavy with ``numpy.float64`` / ``numpy.int64`` /
+# ``numpy.ndarray`` and ``pandas.Timestamp``. The stdlib ``json`` module
+# (and bare ``orjson``) cannot serialize these and would crash the broker
+# the moment one slips through a loosely-typed payload. ``encode_json`` /
+# ``decode_json`` below are the canonical, numpy/pandas-safe codec for the
+# whole messaging layer.
+_ORJSON_OPTS = orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS
+
+
+def _json_default(obj: Any) -> Any:
+    """Fallback encoder for types orjson cannot serialize natively.
+
+    - ``numpy`` scalars → native Python ``int`` / ``float`` / ``bool``.
+    - ``numpy`` arrays → lists (belt-and-suspenders; ``OPT_SERIALIZE_NUMPY``
+      already handles most arrays, this covers object/edge dtypes).
+    - anything date-like (``pandas.Timestamp``, ``datetime``) → ISO-8601 via
+      its ``isoformat`` — duck-typed so we don't import pandas at module load.
+    """
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    isoformat = getattr(obj, "isoformat", None)
+    if callable(isoformat):
+        return isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def encode_json(payload: Any) -> bytes:
+    """Serialize any agent payload to JSON bytes, numpy/pandas-safe.
+
+    Use this everywhere a message crosses the bus — not just for ``Event``
+    envelopes but for raw prediction arrays / feature dicts too.
+    """
+    return orjson.dumps(payload, default=_json_default, option=_ORJSON_OPTS)
+
+
+def decode_json(data: bytes | bytearray | memoryview | str) -> Any:
+    """Deserialize JSON bytes produced by :func:`encode_json`."""
+    return orjson.loads(data)
 
 
 class MessageBroker:
@@ -95,7 +139,7 @@ class MessageBroker:
             async for message in pubsub.listen():
                 if message.get("type") != "message":
                     continue
-                data = orjson.loads(message["data"])
+                data = decode_json(message["data"])
                 yield _event_adapter.validate_python(data)
         finally:
             await pubsub.unsubscribe(*[c.value for c in channels])
@@ -115,4 +159,8 @@ class MessageBroker:
     # ------------------------------------------------------------------ helpers
     @staticmethod
     def _encode(event: EventEnvelope) -> bytes:
-        return orjson.dumps(event.model_dump(mode="json"))
+        # ``model_dump(mode="json")`` coerces typed fields; ``encode_json``'s
+        # numpy/pandas ``default`` is the safety net for any value Pydantic
+        # left as a numpy scalar / array inside a loosely-typed field
+        # (AFML 0-8 final audit V3).
+        return encode_json(event.model_dump(mode="json"))
