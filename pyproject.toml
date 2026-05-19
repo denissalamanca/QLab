@@ -122,7 +122,8 @@ module = [
     "pandas.*",
 ]
 ignore_missing_imports = true
-# numba's @njit decorator strips typing — accept Any return from JIT'd helpers
+# numba's @njit decorator strips typing — accept Any return from JIT'd helpers.
+# Also covers pandas .to_numpy() Any returns from rolling-window primitives.
 [[tool.mypy.overrides]]
 module = [
     "afml.data.ffd",
@@ -131,8 +132,23 @@ module = [
     "afml.labeling.primary_alphas.cusum",
     "afml.labeling.triple_barrier",
     "afml.labeling.volatility",
+    "afml.features.amihud",
+    "afml.features.corwin_schultz",
+    "afml.features.hasbrouck",
+    "afml.features.kyle",
+    "afml.features.lempel_ziv",
+    "afml.features.ofi",
+    "afml.features.roll",
+    "afml.features.shannon",
 ]
 disable_error_code = ["misc", "no-any-return", "untyped-decorator"]
+
+# Phase 3 tests pass numpy default_rng()-derived arrays (floating[Any]) to
+# feature funcs typed as NDArray[float64]; the funcs cast internally. Accept
+# the looser argument type at the test boundary.
+[[tool.mypy.overrides]]
+module = ["tests.unit.phase3.*"]
+disable_error_code = ["arg-type"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
