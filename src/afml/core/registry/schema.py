@@ -36,6 +36,22 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+"""Allowed values for ``Experiment.status``.
+
+AFML 0-4 integration audit V3: a hypothesis can fail at the Phase 4 Clustered
+MDA gate (zero surviving features) BEFORE Phase 5 / Brain 2 ever runs. We
+preserve the trial in the registry so the DSR multiple-testing penalty stays
+honest, but flag it so callers can filter it out of deployment.
+"""
+
+EXPERIMENT_STATUS_COMPLETED: str = "completed"
+EXPERIMENT_STATUS_FAILED_AT_MDA: str = "FAILED_AT_MDA"
+ALLOWED_EXPERIMENT_STATUSES: frozenset[str] = frozenset({
+    EXPERIMENT_STATUS_COMPLETED,
+    EXPERIMENT_STATUS_FAILED_AT_MDA,
+})
+
+
 class Experiment(Base):
     """One hypothesis tested against one asset under one parameter vector."""
 
@@ -58,6 +74,13 @@ class Experiment(Base):
     brain_1_recall: Mapped[float | None] = mapped_column(Float, nullable=True)
     brain_2_log_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_deployed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # AFML 0-4 integration audit V3 — circuit-breaker status.
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default=EXPERIMENT_STATUS_COMPLETED,
+        nullable=False,
+        index=True,
+    )
 
     __table_args__ = (
         UniqueConstraint(

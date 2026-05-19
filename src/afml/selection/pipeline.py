@@ -13,16 +13,27 @@ a :class:`SelectionResult` carrying:
 
 The pipeline does NOT mutate its inputs. ``X`` is converted to numpy float64
 internally; the original DataFrame is kept untouched.
+
+**AFML 0-4 integration audit V3 — empty-MDA circuit breaker.** If both
+Clustered MDA and the SFI fallback fail to produce any surviving features,
+``select_features`` does NOT crash. It returns a :class:`SelectionResult`
+with ``halted_at_mda=True`` and ``surviving_features=[]``. When the optional
+``registry`` parameter is supplied, the failed hypothesis is logged to the
+Alpha Registry with ``status=FAILED_AT_MDA`` so the DSR multiple-testing
+denominator stays honest.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+from uuid import UUID
 
 import numpy as np
 import numpy.typing as npt
 import polars as pl
 
+from afml.core.registry import AlphaRegistryRepository
 from afml.selection.clustering import ONCResult, cluster_features_onc
 from afml.selection.distance import afml_distance_matrix
 from afml.selection.mda import (
@@ -69,6 +80,9 @@ class SelectionResult:
     surviving_features: list[str]
     used_sfi_fallback: bool
     cluster_to_features: dict[int, list[str]]
+    # AFML 0-4 integration audit V3 — circuit-breaker telemetry.
+    halted_at_mda: bool = False
+    registry_experiment_id: UUID | None = None
 
 
 def select_features(
@@ -84,6 +98,8 @@ def select_features(
     n_splits: int = 5,
     embargo_pct: float = 0.01,
     random_state: int = 0,
+    registry: AlphaRegistryRepository | None = None,
+    experiment_metadata: dict[str, Any] | None = None,
 ) -> SelectionResult:
     """Run the full Phase 4 selection pipeline.
 
@@ -98,6 +114,10 @@ def select_features(
         aligned row-for-row with ``X``.
     t0, t1
         ``(n_samples,)`` event-horizon bounds (see :class:`PurgedKFold`).
+        **AFML 0-4 audit V1**: ``t1`` must be the *realized* exit time
+        (``TripleBarrierLabels.df["exit_timestamp"]``), not the conservative
+        ``vertical_timestamp``. The realized horizon gives tighter (correct)
+        purging.
     feature_columns
         Explicit subset of feature column names. ``None`` ⇒ every column except
         ``timestamp_col``.
@@ -113,10 +133,23 @@ def select_features(
         Purged K-Fold knobs.
     random_state
         Seeds RandomForest + permutation RNG for reproducibility.
+    registry
+        Optional :class:`AlphaRegistryRepository`. If provided alongside
+        ``experiment_metadata``, an empty-survivors outcome will be logged as
+        a ``FAILED_AT_MDA`` row (preserving the DSR trial denominator) instead
+        of crashing the pipeline.
+    experiment_metadata
+        Dict with at minimum the keys ``agent_version``, ``asset``,
+        ``algorithmic_family``, ``hyperparameter_vector``,
+        ``num_events_triggered`` — i.e. everything
+        ``AlphaRegistryRepository.record_failed_mda`` needs. Ignored when
+        ``registry is None``.
 
     Returns
     -------
-    :class:`SelectionResult`.
+    :class:`SelectionResult`. When the circuit breaker trips, the result has
+    ``halted_at_mda=True``, ``surviving_features=[]``, and (if a registry was
+    supplied) a non-``None`` ``registry_experiment_id``.
     """
     if feature_columns is None:
         feature_columns = [c for c in X.columns if c != timestamp_col]
@@ -193,6 +226,15 @@ def select_features(
     else:
         surviving_features = mda_survivors
 
+    # AFML 0-4 integration audit V3 — empty-MDA circuit breaker.
+    # Even after SFI fallback, the pipeline may still produce zero survivors
+    # if every feature is pure noise. Log the failed hypothesis to the Alpha
+    # Registry (so DSR's trial count stays honest) and halt cleanly.
+    halted_at_mda = len(surviving_features) == 0
+    registry_experiment_id: UUID | None = None
+    if halted_at_mda and registry is not None and experiment_metadata is not None:
+        registry_experiment_id = registry.record_failed_mda(**experiment_metadata)
+
     return SelectionResult(
         feature_names=feature_columns,
         distance_matrix=distance_matrix,
@@ -202,4 +244,6 @@ def select_features(
         surviving_features=surviving_features,
         used_sfi_fallback=used_sfi_fallback,
         cluster_to_features=cluster_to_features,
+        halted_at_mda=halted_at_mda,
+        registry_experiment_id=registry_experiment_id,
     )

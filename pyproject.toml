@@ -172,7 +172,7 @@ markers = [
     "phase8: Phase 8 — MLOps / structural breaks",
     "phase9: Phase 9 — control plane",
     "benchmark: performance benchmarks (skipped by default; run with --run-benchmarks)",
-    "integration: integration tests requiring external services (Redis, MT5)",
+    "integration: cross-phase end-to-end tests (Phase 1→4 wiring; later: external Redis / MT5)",
     "slow: tests > 5s",
 ]
 addopts = "-ra --strict-markers --strict-config"

@@ -21,7 +21,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from afml.core.registry.exceptions import DuplicateHypothesisError
-from afml.core.registry.schema import Experiment, metadata
+from afml.core.registry.schema import (
+    ALLOWED_EXPERIMENT_STATUSES,
+    EXPERIMENT_STATUS_COMPLETED,
+    EXPERIMENT_STATUS_FAILED_AT_MDA,
+    Experiment,
+    metadata,
+)
 
 
 def _hash_hyperparameters(hparams: dict[str, Any]) -> str:
@@ -91,13 +97,23 @@ class AlphaRegistryRepository:
         brain_1_recall: float | None = None,
         brain_2_log_loss: float | None = None,
         is_deployed: bool = False,
+        status: str = EXPERIMENT_STATUS_COMPLETED,
     ) -> UUID:
         """Insert an immutable hypothesis record.
 
         Raises ``DuplicateHypothesisError`` if the same
         ``(asset, algorithmic_family, hyperparameter_vector)`` triple was already
         recorded — preserving the integrity of the DSR trial count.
+
+        ``status`` defaults to :data:`EXPERIMENT_STATUS_COMPLETED`. Pass
+        :data:`EXPERIMENT_STATUS_FAILED_AT_MDA` to record a circuit-breaker
+        halt at Phase 4's Clustered MDA gate without ever attempting Phase 5
+        / Brain 2.
         """
+        if status not in ALLOWED_EXPERIMENT_STATUSES:
+            raise ValueError(
+                f"unknown status {status!r}; allowed: {sorted(ALLOWED_EXPERIMENT_STATUSES)}"
+            )
         hparam_hash = _hash_hyperparameters(hyperparameter_vector)
         exp = Experiment(
             agent_version=agent_version,
@@ -110,6 +126,7 @@ class AlphaRegistryRepository:
             brain_1_recall=brain_1_recall,
             brain_2_log_loss=brain_2_log_loss,
             is_deployed=is_deployed,
+            status=status,
         )
         try:
             with self.session() as s:
@@ -121,6 +138,41 @@ class AlphaRegistryRepository:
                 f"Hypothesis already exists for asset={asset!r}, "
                 f"family={algorithmic_family!r}, hparam_hash={hparam_hash[:12]}…"
             ) from e
+
+    def record_failed_mda(
+        self,
+        *,
+        agent_version: str,
+        asset: str,
+        algorithmic_family: str,
+        hyperparameter_vector: dict[str, Any],
+        num_events_triggered: int,
+        orthogonality_score: float | None = None,
+        brain_1_recall: float | None = None,
+    ) -> UUID:
+        """Log a Phase 4 ``FAILED_AT_MDA`` hypothesis without crashing.
+
+        AFML 0-4 integration audit V3: Clustered MDA may correctly return zero
+        surviving features on a pure-noise hypothesis. The pipeline must NOT
+        crash — it must record the trial (preserving the DSR multiple-testing
+        denominator) with ``status = FAILED_AT_MDA``, ``brain_2_log_loss =
+        NULL``, and ``is_deployed = False``, so no further capital is committed
+        to the dead branch.
+
+        Returns the new ``experiment_id``.
+        """
+        return self.record_experiment(
+            agent_version=agent_version,
+            asset=asset,
+            algorithmic_family=algorithmic_family,
+            hyperparameter_vector=hyperparameter_vector,
+            num_events_triggered=num_events_triggered,
+            orthogonality_score=orthogonality_score,
+            brain_1_recall=brain_1_recall,
+            brain_2_log_loss=None,
+            is_deployed=False,
+            status=EXPERIMENT_STATUS_FAILED_AT_MDA,
+        )
 
     def mark_deployed(self, experiment_id: UUID, deployed: bool = True) -> None:
         with self.session() as s:

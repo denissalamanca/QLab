@@ -45,10 +45,19 @@ from afml.labeling.volatility import ewm_volatility
 class TripleBarrierLabels:
     """Labeled output of ``apply_triple_barrier``.
 
-    The dataframe has columns: ``event_timestamp``, ``side``, ``entry_price``,
-    ``upper_price``, ``lower_price``, ``vertical_timestamp``, ``barrier_hit``
-    (``"upper"|"lower"|"vertical"``), ``exit_price``, ``return_pct``, ``label``
+    The dataframe has columns: ``event_timestamp`` (the entry / ``t0``),
+    ``side``, ``entry_price``, ``upper_price``, ``lower_price``,
+    ``vertical_timestamp`` (the conservative upper bound on the holding
+    period), ``barrier_hit`` (``"upper"|"lower"|"vertical"``),
+    ``exit_timestamp`` (the **realized** barrier-touch time — the AFML
+    label-resolution moment ``t1``), ``exit_price``, ``return_pct``, ``label``
     (0 or 1).
+
+    **Realized vs vertical ``t1`` (AFML 0-4 integration audit V1).** Downstream
+    purging / embargo schemes (``PurgedKFold``, ``PurgedWalkForwardCV``) must
+    ingest ``exit_timestamp`` as ``t1``, *not* ``vertical_timestamp``. The
+    realized exit is when the label becomes known; purging is tighter than the
+    vertical-barrier upper bound and recovers training data without leaking.
     """
 
     df: pl.DataFrame
@@ -197,6 +206,7 @@ def apply_triple_barrier(  # noqa: PLR0915 — single-pass linear bookkeeping; s
 
     event_bar_indices: list[int] = []
     vertical_bar_indices: list[int] = []
+    exit_bar_indices: list[int] = []  # AFML 0-4 audit V1: realized t1
     out_side: list[str] = []
     out_entry: list[float] = []
     out_upper: list[float] = []
@@ -223,13 +233,17 @@ def apply_triple_barrier(  # noqa: PLR0915 — single-pass linear bookkeeping; s
         lower = entry * (1.0 - stop_loss_mult * sigma)
         horizon_end = idx + vertical_barrier_bars
 
-        label, barrier_code, _exit_idx, ret_pct, exit_price = _label_one(
+        label, barrier_code, exit_idx, ret_pct, exit_price = _label_one(
             high, low, close, idx, side_int, upper, lower, horizon_end
         )
         barrier_str = {0: "vertical", 1: "upper", 2: "lower"}[barrier_code]
 
         event_bar_indices.append(idx)
         vertical_bar_indices.append(min(horizon_end, n - 1))
+        # AFML 0-4 integration audit V1: capture the *realized* barrier-touch
+        # bar index. For upper / lower exits this is < vertical; for vertical
+        # exits it equals min(horizon_end, n - 1).
+        exit_bar_indices.append(int(exit_idx))
         out_side.append(side_str)
         out_entry.append(float(entry))
         out_upper.append(float(upper))
@@ -245,10 +259,12 @@ def apply_triple_barrier(  # noqa: PLR0915 — single-pass linear bookkeeping; s
     if event_bar_indices:
         event_ts_arr = bar_ts[np.asarray(event_bar_indices, dtype=np.int64)]
         vertical_ts_arr = bar_ts[np.asarray(vertical_bar_indices, dtype=np.int64)]
+        exit_ts_arr = bar_ts[np.asarray(exit_bar_indices, dtype=np.int64)]
     else:
         empty_ts = np.array([], dtype=bar_ts.dtype)
         event_ts_arr = empty_ts
         vertical_ts_arr = empty_ts
+        exit_ts_arr = empty_ts
 
     df = pl.DataFrame({
         "event_timestamp": event_ts_arr,
@@ -258,6 +274,10 @@ def apply_triple_barrier(  # noqa: PLR0915 — single-pass linear bookkeeping; s
         "lower_price": out_lower,
         "vertical_timestamp": vertical_ts_arr,
         "barrier_hit": out_barrier,
+        # AFML 0-4 integration audit V1: realized t1 for downstream purging.
+        # ``exit_timestamp ≤ vertical_timestamp`` always; equality holds iff
+        # the bar hit the vertical barrier.
+        "exit_timestamp": exit_ts_arr,
         "exit_price": out_exit_price,
         "return_pct": out_return,
         "label": out_label,

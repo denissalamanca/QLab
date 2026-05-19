@@ -332,3 +332,82 @@ def test_exit_price_is_barrier_price_not_close() -> None:
     # Exit at the upper barrier (where the stop / TP order would fill), not at
     # high[110] nor close[110].
     assert row["exit_price"] == pytest.approx(row["upper_price"])
+
+
+@pytest.mark.phase2
+def test_exit_timestamp_column_present() -> None:
+    """AFML 0-4 integration audit V1 — output schema must include the
+    realized barrier-touch ``exit_timestamp`` so Phase 4's PurgedKFold can
+    purge against the *actual* label-resolution horizon, not just the
+    conservative ``vertical_timestamp``."""
+    close, high, low = _flat_path_with_spike(upper_spike_mult=3.0)
+    bars = _bars_from_ohlc(close, high, low)
+    events = pl.DataFrame(
+        {"timestamp": [bars["timestamp"][100]], "side": ["long"]},
+        schema={"timestamp": pl.Datetime("ms", "UTC"), "side": pl.Utf8},
+    )
+    out = apply_triple_barrier(
+        bars,
+        events,
+        vol_span=20,
+        vertical_barrier_bars=30,
+    )
+    assert "exit_timestamp" in out.df.columns
+    # And the dtype must be Datetime-comparable to the bar grid (the bar tz is
+    # dropped when polars rebuilds the column from indexed numpy datetime64;
+    # downstream ``align_*`` helpers re-cast as needed, so we only assert the
+    # time-unit precision here).
+    exit_dtype = out.df.schema["exit_timestamp"]
+    bar_dtype = bars.schema["timestamp"]
+    assert isinstance(exit_dtype, pl.Datetime)
+    assert isinstance(bar_dtype, pl.Datetime)
+    assert exit_dtype.time_unit == bar_dtype.time_unit
+
+
+@pytest.mark.phase2
+def test_exit_timestamp_le_vertical_timestamp_always() -> None:
+    """``exit_timestamp ≤ vertical_timestamp`` for every event — equality
+    holds iff ``barrier_hit == 'vertical'``."""
+    rng = np.random.default_rng(0)
+    n = 600
+    close = 100.0 + np.cumsum(rng.standard_normal(n) * 0.02)
+    bars = _bars_from_close(close)
+    # Many overlapping events along the path so we get a mix of barrier hits.
+    event_ts = [bars["timestamp"][i] for i in range(50, 500, 20)]
+    events = pl.DataFrame(
+        {"timestamp": event_ts, "side": ["long"] * len(event_ts)},
+        schema={"timestamp": pl.Datetime("ms", "UTC"), "side": pl.Utf8},
+    )
+    out = apply_triple_barrier(bars, events, vol_span=30, vertical_barrier_bars=20)
+    rows = out.df.to_dicts()
+    assert rows  # sanity — events did label
+    for row in rows:
+        assert row["exit_timestamp"] <= row["vertical_timestamp"], f"exit > vertical for row {row}"
+        if row["barrier_hit"] == "vertical":
+            assert row["exit_timestamp"] == row["vertical_timestamp"]
+        else:
+            assert row["exit_timestamp"] <= row["vertical_timestamp"]
+
+
+@pytest.mark.phase2
+def test_exit_timestamp_strictly_below_vertical_on_upper_hit() -> None:
+    """When the upper barrier is touched mid-horizon, ``exit_timestamp`` must
+    be strictly LESS than ``vertical_timestamp`` — proving the realized t1 is
+    tighter than the worst-case t1 and can recover training data downstream."""
+    close, high, low = _flat_path_with_spike(upper_spike_mult=3.0)
+    bars = _bars_from_ohlc(close, high, low)
+    events = pl.DataFrame(
+        {"timestamp": [bars["timestamp"][100]], "side": ["long"]},
+        schema={"timestamp": pl.Datetime("ms", "UTC"), "side": pl.Utf8},
+    )
+    out = apply_triple_barrier(
+        bars,
+        events,
+        vol_span=20,
+        vertical_barrier_bars=30,
+    )
+    row = out.df.row(0, named=True)
+    assert row["barrier_hit"] == "upper"
+    assert row["exit_timestamp"] < row["vertical_timestamp"], (
+        "realized t1 must be < vertical t1 when the upper barrier is hit mid-horizon"
+    )
