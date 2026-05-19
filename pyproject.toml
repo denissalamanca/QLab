@@ -88,6 +88,8 @@ ignore = [
     "PLR0913",  # too many arguments — common in scientific signatures
     "PLR2004",  # magic value in comparison — covered by custom audit later
     "E501",     # line length governed by formatter
+    "RUF002",   # mathematical Unicode in docstrings (× − ω θ τ etc.) is intentional
+    "RUF003",   # same — ambiguous Unicode in comments
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -112,8 +114,17 @@ plugins = ["pydantic.mypy"]
 files = ["src/afml", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["fakeredis.*"]
+module = [
+    "fakeredis.*",
+    "numba.*",
+    "scipy.*",
+    "statsmodels.*",
+]
 ignore_missing_imports = true
+# numba's @njit decorator strips typing — accept Any return from JIT'd helpers
+[[tool.mypy.overrides]]
+module = ["afml.data.ffd", "afml.data.bars.tick_imbalance", "afml.data.bars.tick_run"]
+disable_error_code = ["misc", "no-any-return", "untyped-decorator"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
