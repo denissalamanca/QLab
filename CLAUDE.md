@@ -26,8 +26,8 @@ When the PRD and Blueprint disagree, the Blueprint wins (it's the engineering co
 | 4 | Feature Selection & ONC | Agent 4 | ✅ shipped | §6 | [#8](https://github.com/denissalamanca/QLab/pull/8) |
 | 5 | Meta-Labeling / Brain 2 | Agent 5 | ✅ shipped | §7 | [#9](https://github.com/denissalamanca/QLab/pull/9) |
 | 6 | Validation / CPCV / DSR | Agent 6 | ✅ shipped | §8 | [#12](https://github.com/denissalamanca/QLab/pull/12) |
-| 7 | Bet Sizing & Execution | Agent 7 | next | §9 | — |
-| 8 | MLOps / Structural Breaks | Agent 8 | pending | §10 | — |
+| 7 | Bet Sizing & Execution | Agent 7 | ✅ shipped | §9 | [#15](https://github.com/denissalamanca/QLab/pull/15) |
+| 8 | MLOps / Structural Breaks | Agent 8 | next | §10 | — |
 | 9 | Control Plane (React/FastAPI) | — | pending | §11 | — |
 
 **Strict phase-by-phase build.** `make phase{N-1}` must be green before any code is written for phase N. No vertical-slice shortcuts. No relaxing of unit-test assertions to make them pass — fix the underlying code.
@@ -86,6 +86,14 @@ Integration gate: `make integration` runs `tests/integration/test_phase1_to_4.py
 - **V3 — XGBoost mirror + sample-weight propagation.** When ``compare_with_xgboost=True`` (default), both SBRF and XGBoost get fit with ``sample_weight = ū_i`` and calibrated via purged CV. Tests verify weight propagation by comparing skewed-weight vs uniform-weight predictions.
 - **V2.1 — empty-MDA pass-through.** When Phase 4's circuit breaker fires (``X.shape[1] == 0``), ``train_brain_two`` returns a sentinel ``BrainTwoResult`` with ``halted_at_mda_upstream=True`` instead of crashing.
 - **Weight normalisation (pre-Phase-6 patch).** Uniqueness weights ``ū_i ∈ (0,1]`` are normalised to sum to ``N`` (``ū_i × N/Σū_i``) before any estimator fit — ``afml.modeling.calibration._normalize_sample_weights``. Prevents XGBoost ``min_child_weight`` vanishing-gradient suppression. Scale-invariant for sklearn trees.
+
+## Phase 7 execution contracts (Blueprint §9)
+
+- **Bet sizing.** ``calculate_bet_size(p)`` = ``2·Φ(z)-1`` with ``z=(p-0.5)/√(p(1-p))``; ``0`` when ``p ≤ 0.5``. Batch sizing (``bet_sizes_for_batch``) auto-switches to a 2-component Gaussian-mixture CDF when the active z-scores fail Shapiro-Wilk (``p<0.05``).
+- **Risk engine.** ``RiskEngine`` applies (1) ``c_95`` concurrent-position scaling, (2) ESMA leverage caps (``src/afml/config/risk.py`` — FX 30:1, index/metal 20:1, crypto 2:1), and (3) a hard FTMO drawdown-buffer cap (10% of equity) so total committed margin never breaches even under a 50-signal burst.
+- **Broker contract.** ``BrokerAdapter`` ABC; ``InMemoryMockBroker`` for tests/dry-runs; ``MT5Adapter`` scaffold (lazy ``MetaTrader5`` import → clear error off-terminal; live wiring deferred to the broker-integration milestone). Same MT5 socket feeds features + execution.
+- **ExecutionEngine.** Signals → batch sizing → per-bet risk sizing (descending-confidence order) → broker dispatch; ``emergency_flatten`` closes all + resets the budget (wired to the Phase 9 control-plane ``/emergency/flatten``).
+- **Risk constants live in ``src/afml/config/risk.py``** — never inline.
 
 ## Phase 6 validation contracts (AFML 0-6 audit)
 
