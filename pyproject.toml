@@ -142,6 +142,10 @@ module = [
     "afml.features.ofi",
     "afml.features.roll",
     "afml.features.shannon",
+    # Phase 5 — modules that JIT (numba) or subclass sklearn BaseEstimator
+    # (which is untyped). Same misc/no-any-return/untyped-decorator triad.
+    "afml.modeling.concurrency",
+    "afml.modeling.sbrf",
 ]
 disable_error_code = ["misc", "no-any-return", "untyped-decorator"]
 

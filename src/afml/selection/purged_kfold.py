@@ -34,6 +34,10 @@ import numpy.typing as npt
 
 DEFAULT_N_SPLITS: int = 5
 DEFAULT_EMBARGO_PCT: float = 0.01
+# Minimum fraction of total samples each walk-forward training fold should
+# accumulate before the first test fold starts. Below this, the early folds
+# train on insufficient history; AFML recommends ≥ 30 %.
+DEFAULT_WALK_FORWARD_TRAIN_FRACTION: float = 0.3
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +136,134 @@ class PurgedKFold:
             if embargo_size > 0:
                 embargo_stop = min(n, test_stop + embargo_size)
                 train_mask[test_stop:embargo_stop] = False
+
+            train_idx_sorted = np.where(train_mask)[0]
+            yield (
+                sort_order[train_idx_sorted].astype(np.int64),
+                sort_order[test_idx_sorted].astype(np.int64),
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PurgedWalkForwardCV:
+    """Forward-only / chronological CV with purge + embargo (AFML Ch. 7).
+
+    Unlike :class:`PurgedKFold` which yields two-sided folds (train comes from
+    both sides of each test window), this splitter yields strictly
+    forward-walking folds: every train sample is chronologically before every
+    test sample in the same fold.
+
+    This is exactly what Blueprint §7.3 Index-Intersection DoD asserts:
+    ``max(train_t1) + embargo_time < min(test_t0)`` for every fold. The
+    statement is one-sided and only consistent with walk-forward splits.
+
+    Algorithm:
+
+    1. Sort events by ``t0``.
+    2. Reserve the first ``train_fraction × n`` events as the "burn-in" history
+       — these never appear in a test fold.
+    3. Divide the remainder into ``n_splits`` chronological test folds.
+    4. For fold ``k``: train = events strictly before the test fold's start,
+       minus any whose label horizon ``[t0, t1]`` extends into the test
+       window, minus the embargo window's worth of samples immediately
+       preceding the test fold.
+
+    Parameters
+    ----------
+    n_splits
+        Number of contiguous walk-forward test folds.
+    embargo_pct
+        Embargo width as a fraction of the total sample count. The embargo
+        sits *between* the train tail and the test head.
+    train_fraction
+        Minimum burn-in fraction (default 0.3). The first fold's test set
+        begins only after this many samples have already been seen.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> t0 = np.arange(100, dtype=np.int64)
+    >>> t1 = t0 + 3
+    >>> cv = PurgedWalkForwardCV(n_splits=4, embargo_pct=0.02)
+    >>> for tr, te in cv.split(t0, t1):
+    ...     assert t1[tr].max() + 2 < t0[te].min()  # AFML index-intersection
+    """
+
+    n_splits: int = DEFAULT_N_SPLITS
+    embargo_pct: float = DEFAULT_EMBARGO_PCT
+    train_fraction: float = DEFAULT_WALK_FORWARD_TRAIN_FRACTION
+
+    def __post_init__(self) -> None:
+        if self.n_splits < 1:
+            raise ValueError(f"n_splits must be ≥ 1, got {self.n_splits}")
+        if not 0.0 <= self.embargo_pct < 0.5:
+            raise ValueError(f"embargo_pct must be in [0, 0.5), got {self.embargo_pct}")
+        if not 0.0 < self.train_fraction < 1.0:
+            raise ValueError(f"train_fraction must be in (0, 1), got {self.train_fraction}")
+
+    def split(
+        self,
+        t0: npt.NDArray[np.int64] | npt.NDArray[np.floating],
+        t1: npt.NDArray[np.int64] | npt.NDArray[np.floating],
+    ) -> Iterator[tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]]:
+        """Yield ``(train_idx, test_idx)`` for each chronological fold.
+
+        Every yielded fold satisfies
+        ``max(t1[train_idx]) + embargo_size < min(t0[test_idx])``
+        (Blueprint §7.3 DoD), where ``embargo_size`` is the number of
+        samples in the embargo window.
+        """
+        t0_arr = np.asarray(t0)
+        t1_arr = np.asarray(t1)
+        if t0_arr.shape != t1_arr.shape or t0_arr.ndim != 1:
+            raise ValueError(
+                f"t0 and t1 must be 1-D and same shape; got {t0_arr.shape} / {t1_arr.shape}"
+            )
+        n = t0_arr.size
+        if n < self.n_splits + 1:
+            raise ValueError(f"need ≥ n_splits + 1 samples; got {n} vs {self.n_splits}")
+        if np.any(t1_arr < t0_arr):
+            raise ValueError("every t1[i] must be ≥ t0[i] — label horizons cannot go backwards")
+
+        sort_order = np.argsort(t0_arr, kind="mergesort")
+        t0_sorted = t0_arr[sort_order]
+        t1_sorted = t1_arr[sort_order]
+
+        embargo_size = int(np.floor(n * self.embargo_pct))
+        burn_in = int(np.floor(n * self.train_fraction))
+        if burn_in >= n:
+            raise ValueError(
+                f"train_fraction {self.train_fraction} leaves no room for test folds; "
+                f"burn_in={burn_in} ≥ n={n}"
+            )
+        if n - burn_in < self.n_splits:
+            raise ValueError(
+                f"not enough samples after burn-in: have {n - burn_in}, need ≥ {self.n_splits}"
+            )
+
+        # Test folds tile the post-burn-in region chronologically.
+        fold_edges = np.linspace(burn_in, n, self.n_splits + 1, dtype=np.int64)
+        for fold in range(self.n_splits):
+            test_start = int(fold_edges[fold])
+            test_stop = int(fold_edges[fold + 1])
+            if test_stop <= test_start:
+                continue
+            test_idx_sorted = np.arange(test_start, test_stop, dtype=np.int64)
+            test_t0_min = t0_sorted[test_start]
+
+            # Train candidates are everything strictly before the test fold.
+            train_mask = np.zeros(n, dtype=bool)
+            train_mask[:test_start] = True
+
+            # PURGE + EMBARGO in time units:
+            # Blueprint §7.3 DoD asserts ``max(train_t1) + embargo_time < min(test_t0)``.
+            # Equivalently: drop any train sample whose ``t1 + embargo_size``
+            # reaches into (or past) the test fold's first ``t0``. Encoding the
+            # embargo in TIME UNITS (matching ``t0`` / ``t1``) is what makes the
+            # literal DoD assertion hold; a sample-count embargo would only
+            # imply the weaker no-overlap purge.
+            embargo_cut = (t1_sorted + embargo_size) >= test_t0_min
+            train_mask &= ~embargo_cut
 
             train_idx_sorted = np.where(train_mask)[0]
             yield (
