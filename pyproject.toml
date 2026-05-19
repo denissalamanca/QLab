@@ -121,6 +121,8 @@ module = [
     "statsmodels.*",
     "pandas.*",
     "sklearn.*",
+    "shap.*",
+    "xgboost.*",
 ]
 ignore_missing_imports = true
 # numba's @njit decorator strips typing — accept Any return from JIT'd helpers.
@@ -146,6 +148,8 @@ module = [
     # (which is untyped). Same misc/no-any-return/untyped-decorator triad.
     "afml.modeling.concurrency",
     "afml.modeling.sbrf",
+    # Phase 8 — GSADF inner ADF / window sweep are numba-JIT'd.
+    "afml.monitoring.gsadf",
 ]
 disable_error_code = ["misc", "no-any-return", "untyped-decorator"]
 
