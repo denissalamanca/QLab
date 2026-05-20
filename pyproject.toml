@@ -18,6 +18,9 @@ dependencies = [
     "orjson>=3.9",
 ]
 
+[project.scripts]
+afml = "afml.cli:main"
+
 [dependency-groups]
 # Phase 1+ data engineering.
 data = [
@@ -177,6 +180,7 @@ markers = [
     "phase7: Phase 7 — bet sizing & execution",
     "phase8: Phase 8 — MLOps / structural breaks",
     "phase9: Phase 9 — control plane",
+    "m0: Operational milestone 0 — operator bootstrap (afml CLI, enroll-ceo, doctor)",
     "benchmark: performance benchmarks (skipped by default; run with --run-benchmarks)",
     "integration: cross-phase end-to-end tests (Phase 1→4 wiring; later: external Redis / MT5)",
     "slow: tests > 5s",

@@ -59,6 +59,10 @@ phase8: lint type
 phase9: lint type
 	uv run pytest -q -m phase9
 
+# Operational milestones (post-Phase-9; see docs/OPERATIONS_ROADMAP.md).
+m0: lint type
+	uv run pytest -q -m m0
+
 # Cross-phase integration tests (AFML 0-4 audit clearance + Phase 1→4 end-to-end).
 integration: lint type
 	uv run pytest -q -m integration
