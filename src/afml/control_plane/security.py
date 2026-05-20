@@ -25,11 +25,23 @@ maps them to HTTP 403.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from uuid import UUID
 
 from afml.crypto.signing import approval_message, flatten_message, verify_signature
 from afml.crypto.totp import DEFAULT_VALID_WINDOW, verify_totp
+
+# AFML 0-9 final audit V1: signatures are valid only within ±60 s of the
+# signed timestamp, bounding any replay window (a network retry or captured
+# payload) to one minute even before the per-nonce guard.
+DEFAULT_MAX_TIMESTAMP_SKEW_MS: int = 60_000
+
+
+def _now_ms() -> int:
+    """Current UTC time in milliseconds (the server clock for freshness checks)."""
+    return int(time.time() * 1000)
 
 
 class CEOAuthError(Exception):
@@ -46,6 +58,10 @@ class InvalidTOTPError(CEOAuthError):
 
 class ReplayError(CEOAuthError):
     """A flatten nonce was reused — possible replay of a captured signature."""
+
+
+class StaleTimestampError(CEOAuthError):
+    """The signed timestamp is outside the freshness window — possible replay."""
 
 
 @dataclass
@@ -66,42 +82,69 @@ class CEOAuthenticator:
     public_key_bytes: bytes
     totp_secret: str
     totp_valid_window: int = DEFAULT_VALID_WINDOW
+    max_timestamp_skew_ms: int = DEFAULT_MAX_TIMESTAMP_SKEW_MS
+    time_provider: Callable[[], int] = _now_ms
     _consumed_nonces: set[str] = field(default_factory=set, repr=False)
 
-    def verify_approval(self, experiment_id: UUID, signed_token: str, totp_code: str) -> None:
+    def _check_timestamp(self, timestamp_ms: int) -> None:
+        """Reject a signed timestamp outside the ±``max_timestamp_skew_ms`` window."""
+        skew = abs(self.time_provider() - timestamp_ms)
+        if skew > self.max_timestamp_skew_ms:
+            raise StaleTimestampError(
+                f"timestamp skew {skew} ms exceeds {self.max_timestamp_skew_ms} ms window"
+            )
+
+    def verify_approval(
+        self,
+        experiment_id: UUID,
+        timestamp_ms: int,
+        signed_token: str,
+        totp_code: str,
+    ) -> None:
         """Authorise a Paper → Live promotion. Requires signature **and** TOTP.
+
+        The signature must be over ``afml:approve:<experiment_id>:<timestamp_ms>``
+        and the timestamp must be fresh (±60 s) — see audit V1.
 
         Raises
         ------
+        StaleTimestampError
+            If ``timestamp_ms`` is outside the freshness window (replay guard).
         InvalidSignatureError
-            If ``signed_token`` does not verify against the canonical
-            ``afml:approve:<experiment_id>`` message.
+            If ``signed_token`` does not verify against the canonical message.
         InvalidTOTPError
             If ``totp_code`` is empty / malformed / outside the window.
         """
-        message = approval_message(str(experiment_id))
+        self._check_timestamp(timestamp_ms)
+        message = approval_message(str(experiment_id), timestamp_ms)
         if not verify_signature(self.public_key_bytes, message, signed_token):
             raise InvalidSignatureError("invalid or missing Ed25519 signature")
         if not verify_totp(self.totp_secret, totp_code, valid_window=self.totp_valid_window):
             raise InvalidTOTPError("invalid or missing TOTP code")
 
-    def verify_flatten(self, nonce: str, signed_token: str) -> None:
+    def verify_flatten(self, nonce: str, timestamp_ms: int, signed_token: str) -> None:
         """Authorise an emergency flatten. Requires signature only.
 
-        The ``nonce`` binds the signature to a single use; reusing it raises
-        :class:`ReplayError`. A nonce is consumed only after the signature
-        verifies, so a bad-signature attempt cannot burn a legitimate nonce.
+        Defence in depth (audit V1): the signature is over
+        ``afml:flatten:<nonce>:<timestamp_ms>``. The ``timestamp_ms`` must be
+        fresh (±60 s) **and** the ``nonce`` single-use — so a captured flatten
+        signature is replayable neither within the window (nonce consumed) nor
+        after it (timestamp stale), even across a restart that clears the nonce
+        set. A nonce is consumed only after both checks pass.
 
         Raises
         ------
+        StaleTimestampError
+            If ``timestamp_ms`` is outside the freshness window.
         InvalidSignatureError
-            If ``signed_token`` does not verify against ``afml:flatten:<nonce>``.
+            If ``signed_token`` does not verify against the canonical message.
         ReplayError
             If ``nonce`` has already been used.
         """
         if not nonce or not nonce.strip():
             raise InvalidSignatureError("flatten nonce must be a non-empty string")
-        message = flatten_message(nonce)
+        self._check_timestamp(timestamp_ms)
+        message = flatten_message(nonce, timestamp_ms)
         if not verify_signature(self.public_key_bytes, message, signed_token):
             raise InvalidSignatureError("invalid or missing Ed25519 signature")
         if nonce in self._consumed_nonces:

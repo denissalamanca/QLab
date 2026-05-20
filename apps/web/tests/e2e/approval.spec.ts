@@ -40,6 +40,8 @@ test.describe("CEO approval flow", () => {
       expect(body.experiment_id).toBe(STRATEGY.experiment_id);
       expect(body.signed_token).toBe(FAKE_SIGNATURE);
       expect(body.totp_code).toBe("123456");
+      // Audit V1: the anti-replay timestamp must ride along with the payload.
+      expect(typeof body.timestamp_ms).toBe("number");
       approved = true;
       await route.fulfill({
         json: { experiment_id: STRATEGY.experiment_id, deployed: true, message: "ok" },
@@ -51,7 +53,10 @@ test.describe("CEO approval flow", () => {
 
     await page.getByTestId(`approve-${STRATEGY.experiment_id}`).click();
     await expect(page.getByTestId("approval-modal")).toBeVisible();
-    await expect(page.getByTestId("sign-message")).toHaveText(`afml:approve:${STRATEGY.experiment_id}`);
+    // Message includes the dynamic timestamp: afml:approve:<id>:<ms>.
+    await expect(page.getByTestId("sign-message")).toContainText(
+      `afml:approve:${STRATEGY.experiment_id}:`,
+    );
 
     await page.getByTestId("signature-input").fill(FAKE_SIGNATURE);
     await page.getByTestId("totp-input").fill("123456");

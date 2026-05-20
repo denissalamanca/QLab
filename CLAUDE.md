@@ -113,14 +113,25 @@ Integration gate: `make integration` runs `tests/integration/test_phase1_to_4.py
 The CEO Human-in-the-Loop governance layer. **Testable, type-checked logic lives in ``src/afml/control_plane/``** (covered by ``make phase9`` / mypy strict); ``apps/api/main.py`` is a thin production ASGI entry, and ``apps/web/`` is the React frontend (validated by its own Node toolchain, not the Python gate).
 
 - **Two trust levels, matching the Phase 0 event contracts.**
-  - **Approve** (``CEOApproval``) commits capital → requires a valid Ed25519 signature over ``afml:approve:<experiment_id>`` **AND** a live TOTP code (§11.2 mandatory 2FA).
-  - **Flatten** (``EmergencyFlatten``) is a risk-*reducing* kill-switch → requires the signature over ``afml:flatten:<nonce>`` only (never blocked by a TOTP window), plus a per-nonce replay guard.
+  - **Approve** (``CEOApproval``) commits capital → requires a valid Ed25519 signature over ``afml:approve:<experiment_id>:<timestamp_ms>`` **AND** a live TOTP code (§11.2 mandatory 2FA).
+  - **Flatten** (``EmergencyFlatten``) is a risk-*reducing* kill-switch → requires the signature over ``afml:flatten:<nonce>:<timestamp_ms>`` only (never blocked by a TOTP window), plus a per-nonce replay guard.
+  - Both bind a ±60 s ``timestamp_ms`` into the signed message (audit V1 anti-replay) — see the hardening section below.
 - **Keys.** The server holds only the CEO **public** key (verification) + the TOTP secret (from the Keychain). The **private key never enters the server or the browser** — the CEO signs on their own device and pastes the signature. ``CEOAuthenticator`` (``src/afml/control_plane/security.py``) is the single verification seam; failures raise ``CEOAuthError`` subclasses → HTTP 403.
 - **Endpoints (``/api/v1``).** ``GET /registry/strategies`` → ``AlphaRegistryRepository.awaiting_signoff()`` (``completed`` status, ``pbo``/``dsr`` populated, not deployed). ``POST /execution/approve`` → verify → ``mark_deployed`` + publish ``CEOApproval``. ``POST /emergency/flatten`` → verify → ``ExecutionEngine.emergency_flatten`` (closes all + resets risk budget) + publish ``EmergencyFlatten``.
 - **Registry extension.** ``Experiment`` gained nullable ``pbo``/``dsr`` columns; ``record_validation(experiment_id, *, pbo, dsr)`` populates them (Phase 6 → Phase 9 handoff). Backward-compatible (additive nullable columns).
 - **DI + transport seam.** ``ControlPlaneDeps`` bundles repository + execution engine + authenticator + ``EventPublisher``. Default ``InMemoryEventPublisher`` records events for tests; production swaps a Redis-backed publisher. ``create_app(deps)`` stashes them on ``app.state`` — tests inject in-memory doubles, no Redis/Keychain/real broker.
 - **Crypto primitives** live in ``src/afml/crypto/`` (``signing`` Ed25519, ``totp`` RFC 6238, ``keychain`` ``keyring`` façade), re-exported from ``afml.crypto``.
 - **Frontend** (``apps/web/``): React 18 + Vite + TS + Tailwind + shadcn-style UI + Recharts (PBO/DSR ship-gate charts). ``npm run typecheck`` / ``npm run build`` / ``npm run e2e`` (Playwright) all green; the approval-flow E2E mocks the API and asserts the §11.1 request contract.
+
+## AFML 0-9 final integration audit (production hardening)
+
+Five boundary vulnerabilities patched before live clearance. Edge cases covered in ``tests/unit/phase9/test_final_integration_audit.py`` + ``tests/integration/test_phase9_control_plane.py``.
+
+- **V1 — cryptographic anti-replay.** The signed message binds a millisecond ``timestamp_ms`` (``afml:approve:<id>:<ts>`` / ``afml:flatten:<nonce>:<ts>``). ``CEOAuthenticator`` rejects ``abs(now − ts) > 60_000`` (``StaleTimestampError`` → 403). Flatten keeps its single-use nonce guard, so a captured payload is replayable neither within the window (nonce consumed) nor after (timestamp stale). ``time_provider`` is injectable for tests. Frontend captures a fresh ``Date.now()`` per modal open.
+- **V2 — no ASGI event-loop blocking.** Control-plane routes are ``async def`` and offload every blocking SQLite/broker call through ``fastapi.concurrency.run_in_threadpool`` (synchronous crypto verify stays on the loop — microseconds). Concurrent-read tests assert the loop never stalls.
+- **V3 — numpy/pandas API serialization.** ``StrategyOut`` carries ``mode="before"`` field validators that coerce ``numpy.float64``/``numpy.int64`` → native ``float``/``int`` and ``pandas.Timestamp`` → ``datetime`` (ISO-8601 on dump), so the response can't crash with ``Object of type int64 is not JSON serializable``.
+- **V4 — execution race condition.** ``ExecutionEngine`` gained an ``asyncio.Lock`` (lazily bound to the running loop) + ``execute_batch_async`` / ``emergency_flatten_async``. The lock serializes **fetch live margin/positions → size → dispatch** so two concurrently-arriving signals can't both size against a stale margin snapshot and over-leverage. Blocking broker round-trips run via ``asyncio.to_thread``.
+- **V5 — GSADF stagnant-tick guard.** ``gsadf_statistic`` / ``detect_bubble`` short-circuit to ``0.0`` (no explosive root) when ``np.var(y) < 1e-10`` — a flatlined window can't drive a singular ADF design matrix (and the statistic is clamped finite, never ``-inf``).
 
 ## Workflow — PR per milestone
 

@@ -95,15 +95,24 @@ def verify_signature(public_key_bytes: bytes, message: str, signature_hex: str) 
     return True
 
 
-def approval_message(experiment_id: str) -> str:
-    """Canonical message signed to promote a strategy Paper → Live."""
-    return f"afml:approve:{experiment_id}"
+def approval_message(experiment_id: str, timestamp_ms: int) -> str:
+    """Canonical message signed to promote a strategy Paper → Live.
+
+    AFML 0-9 final audit V1: the signature binds the ``experiment_id`` to a
+    millisecond UTC ``timestamp_ms``. The control plane rejects a signature
+    whose timestamp is outside a ±60 s window, so a captured payload cannot be
+    replayed beyond that window (anti-replay).
+    """
+    return f"afml:approve:{experiment_id}:{timestamp_ms}"
 
 
-def flatten_message(nonce: str) -> str:
+def flatten_message(nonce: str, timestamp_ms: int) -> str:
     """Canonical message signed to trigger an emergency flatten.
 
-    The ``nonce`` (caller-supplied, e.g. an ISO timestamp or UUID) prevents a
-    captured flatten signature from being replayed indefinitely.
+    AFML 0-9 final audit V1: the signature binds a caller-supplied ``nonce``
+    (single-use replay guard) **and** a millisecond UTC ``timestamp_ms`` (±60 s
+    freshness window) — defence in depth so a captured flatten signature is
+    neither replayable within the window (nonce already consumed) nor after it
+    (timestamp stale), even across a control-plane restart.
     """
-    return f"afml:flatten:{nonce}"
+    return f"afml:flatten:{nonce}:{timestamp_ms}"

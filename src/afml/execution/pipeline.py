@@ -17,6 +17,7 @@ the Blueprint §9.3 margin-constraint guarantee.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -101,6 +102,16 @@ class ExecutionEngine:
     risk_engine: RiskEngine
     min_margin: float = 1e-9
     _dispatched: list[Fill] = field(default_factory=list)
+    # AFML 0-9 final audit V4: serializes the live fetch→size→dispatch sequence
+    # so two concurrently-arriving signals can never size against the same
+    # stale margin snapshot. Created lazily on first async use so it binds to
+    # the running event loop (Agent 7's asyncio runtime).
+    _lock: asyncio.Lock | None = field(default=None, repr=False)
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     def rehydrate_state(self) -> RehydrationResult:
         """Restore concurrent-position state from the broker on startup.
@@ -179,6 +190,36 @@ class ExecutionEngine:
             used_mixture_fallback=batch.used_mixture_fallback,
         )
 
+    async def execute_batch_async(
+        self,
+        signals: list[Signal],
+        *,
+        random_state: int = 0,
+        rehydrate_first: bool = True,
+    ) -> DispatchResult:
+        """Race-free async execution for Agent 7's live tick loop (audit V4).
+
+        In a live asynchronous environment a probability signal can arrive from
+        Brain 2 *while* a previous signal is still awaiting the broker's
+        open-position / margin response. Both would then size against the same
+        stale concurrent-trade count and over-leverage the account. This method
+        eliminates that race by holding an :class:`asyncio.Lock` across the
+        whole critical section, strictly sequentialising:
+
+            acquire lock → fetch live margin/positions → size → dispatch → release
+
+        No second signal is sized until the first has dispatched and its margin
+        is reflected in the broker book. The blocking broker round-trips run in
+        worker threads (``asyncio.to_thread``) so the event loop stays
+        responsive while the lock guarantees mutual exclusion.
+        """
+        async with self._get_lock():
+            if rehydrate_first:
+                # Fetch the *current* live margin/positions inside the lock so
+                # the size step below cannot use a stale snapshot.
+                await asyncio.to_thread(self.rehydrate_state)
+            return await asyncio.to_thread(self.execute_batch, signals, random_state=random_state)
+
     def emergency_flatten(self, reference_prices: dict[str, float]) -> list[Fill]:
         """Close every open position and reset the risk budget.
 
@@ -187,6 +228,16 @@ class ExecutionEngine:
         closes = self.broker.flatten_all(reference_prices)
         self.risk_engine.reset()
         return closes
+
+    async def emergency_flatten_async(self, reference_prices: dict[str, float]) -> list[Fill]:
+        """Lock-guarded async flatten (audit V4).
+
+        Acquires the same execution lock as :meth:`execute_batch_async` so a
+        kill-switch can never interleave with an in-flight size→dispatch
+        sequence in Agent 7's runtime.
+        """
+        async with self._get_lock():
+            return await asyncio.to_thread(self.emergency_flatten, reference_prices)
 
     @staticmethod
     def _asset_class(symbol: str) -> AssetClass:
