@@ -23,12 +23,14 @@ from afml.crypto import (
     store_ceo_private_key,
 )
 from afml.ops import run_health_checks
+from afml.research.cli import research_app
 
 app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     help="AFML Quant Lab — operator CLI.",
 )
+app.add_typer(research_app, name="research")
 
 
 @app.command("enroll-ceo")

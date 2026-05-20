@@ -9,6 +9,7 @@ remains an honest measure of the multiple-testing penalty.
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from uuid import uuid4
 
 import orjson
@@ -26,6 +27,29 @@ def repo(tmp_db_url: str) -> AlphaRegistryRepository:
     r = AlphaRegistryRepository(tmp_db_url)
     r.create_all()
     return r
+
+
+@pytest.mark.phase0
+def test_sqlite_parent_dir_is_created(tmp_path: Path) -> None:
+    """A file-backed SQLite registry under a missing dir creates the dir itself.
+
+    SQLite will not create intermediate directories — the persistent CLI/agent
+    registry (``sqlite:///./artifacts/alpha_registry.db``) would otherwise fail
+    with ``unable to open database file`` on a fresh checkout.
+    """
+    db_path = tmp_path / "nested" / "subdir" / "alpha_registry.db"
+    assert not db_path.parent.exists()
+    repo = AlphaRegistryRepository(f"sqlite:///{db_path}")
+    repo.create_all()
+    repo.record_experiment(
+        agent_version="t/0.1",
+        asset="EURUSD",
+        algorithmic_family="cusum",
+        hyperparameter_vector={"vol_span": 50, "threshold_mult": 1.0},
+        num_events_triggered=600,
+    )
+    assert db_path.exists()
+    assert repo.total_trials() == 1
 
 
 @pytest.mark.phase0

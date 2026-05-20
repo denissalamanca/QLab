@@ -44,6 +44,7 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import brier_score_loss
 from xgboost import XGBClassifier
 
@@ -93,6 +94,24 @@ class FoldDiagnostics:
 
 
 @dataclass(frozen=True, slots=True)
+class FoldOOS:
+    """Per-fold out-of-sample calibrated predictions (opt-in).
+
+    Emitted only when ``train_brain_two(..., collect_oos_predictions=True)`` —
+    lets the Ops-M1 research harness compute the realised OOS strategy Sharpe
+    per config without re-fitting. Purely additive: default runs never populate
+    it, so existing behaviour is unchanged.
+
+    ``holdout_indices`` are positions into the original ``X`` rows; ``calibrated_proba``
+    is the winning calibrated ``P(success)`` on those holdout rows.
+    """
+
+    fold_index: int
+    holdout_indices: npt.NDArray[np.int64]
+    calibrated_proba: npt.NDArray[np.float64]
+
+
+@dataclass(frozen=True, slots=True)
 class BrainTwoResult:
     """Output of :func:`train_brain_two`.
 
@@ -118,6 +137,9 @@ class BrainTwoResult:
     last_calibration: CalibrationResult | None
     n_estimators: int = field(default=0)
     halted_at_mda_upstream: bool = field(default=False)
+    # Opt-in (Ops M1): per-fold OOS calibrated predictions; ``None`` unless
+    # ``train_brain_two(..., collect_oos_predictions=True)``.
+    oos_predictions: list[FoldOOS] | None = field(default=None)
 
     @property
     def passes_phase5_dod(self) -> bool:
@@ -180,6 +202,23 @@ def _empty_result(
     )
 
 
+def _build_rf_classifier(
+    *, n_estimators: int, max_depth: int, min_samples_leaf: int, random_state: int
+) -> Any:
+    """Construct a plain RandomForest for the Ops-M1 fast surface estimator.
+
+    Uniqueness weighting is applied via ``sample_weight`` at fit time (in the
+    calibration helper); ``n_jobs=-1`` parallelises across cores.
+    """
+    return RandomForestClassifier(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_leaf=min_samples_leaf,
+        random_state=random_state,
+        n_jobs=-1,
+    )
+
+
 def _build_xgboost_classifier(*, n_estimators: int, max_depth: int, random_state: int) -> Any:
     """Construct a standard XGBoost classifier for the meta-model tournament."""
     return XGBClassifier(
@@ -192,7 +231,7 @@ def _build_xgboost_classifier(*, n_estimators: int, max_depth: int, random_state
     )
 
 
-def train_brain_two(  # noqa: PLR0915 — single linear pipeline; splitting harms clarity
+def train_brain_two(  # noqa: PLR0915, PLR0912 — single linear pipeline; splitting harms clarity
     X: npt.NDArray[np.floating],
     y: npt.NDArray[np.integer],
     t0: npt.NDArray[np.int64] | npt.NDArray[np.floating],
@@ -206,7 +245,9 @@ def train_brain_two(  # noqa: PLR0915 — single linear pipeline; splitting harm
     max_depth: int = DEFAULT_MAX_DEPTH,
     min_samples_leaf: int = DEFAULT_MIN_SAMPLES_LEAF,
     compare_with_xgboost: bool = True,
+    estimator: str = "sbrf",
     random_state: int = 0,
+    collect_oos_predictions: bool = False,
 ) -> BrainTwoResult:
     """Train and calibrate Brain 2 across walk-forward folds.
 
@@ -273,6 +314,8 @@ def train_brain_two(  # noqa: PLR0915 — single linear pipeline; splitting harm
         raise ValueError("y must be binary in {0, 1}")
     if not np.all(np.isfinite(X_arr)):
         raise ValueError("X must be finite")
+    if estimator not in ("sbrf", "rf"):
+        raise ValueError(f"estimator must be 'sbrf' or 'rf', got {estimator!r}")
 
     ind_full = indicator_matrix(t0_arr, t1_arr)
     avg_u_full = average_uniqueness(ind_full)
@@ -286,6 +329,7 @@ def train_brain_two(  # noqa: PLR0915 — single linear pipeline; splitting harm
         raise ValueError("PurgedWalkForwardCV produced no folds — check parameters")
 
     fold_diagnostics: list[FoldDiagnostics] = []
+    oos_folds: list[FoldOOS] = []
     last_calibration: CalibrationResult | None = None
 
     for fold_i, (train_idx, holdout_idx) in enumerate(folds):
@@ -305,30 +349,54 @@ def train_brain_two(  # noqa: PLR0915 — single linear pipeline; splitting harm
         ind_train = ind_full[:, train_idx]
         weight_train = avg_u_full[train_idx]
 
-        # ---- SBRF + purged-CV calibration (0-5 audit V1) -------------------
-        sbrf_template = SequentiallyBootstrappedRandomForest(
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            min_samples_leaf=min_samples_leaf,
-            random_state=random_state + fold_i,
-        )
-        sbrf_calibration = fit_calibrated_sbrf_with_purged_cv(
-            sbrf_template,
-            X_train,
-            y_train,
-            ind_train,
-            t0_train,
-            t1_train,
-            weight_train,
-            X_hold,
-            y_hold,
-            n_splits=inner_n_splits,
-            embargo_pct=embargo_pct,
-        )
-
-        winning_calibration = sbrf_calibration
-        winning_brier = min(sbrf_calibration.brier_isotonic, sbrf_calibration.brier_sigmoid)
-        winning_estimator = "sbrf"
+        # ---- Primary estimator + purged-CV calibration (0-5 audit V1) ------
+        if estimator == "sbrf":
+            sbrf_template = SequentiallyBootstrappedRandomForest(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                min_samples_leaf=min_samples_leaf,
+                random_state=random_state + fold_i,
+            )
+            winning_calibration = fit_calibrated_sbrf_with_purged_cv(
+                sbrf_template,
+                X_train,
+                y_train,
+                ind_train,
+                t0_train,
+                t1_train,
+                weight_train,
+                X_hold,
+                y_hold,
+                n_splits=inner_n_splits,
+                embargo_pct=embargo_pct,
+            )
+            winning_estimator = "sbrf"
+        else:
+            # Ops-M1 surface estimator: uniqueness-weighted RandomForest with **no
+            # sequential bootstrap** (O(n log n) vs the bootstrap's O(n²)). The
+            # primary non-IID correction — ``sample_weight = ū`` — is preserved;
+            # only the second-order bootstrap resampling is dropped. Full SBRF is
+            # restored at certification on the plateau survivor.
+            rf_template = _build_rf_classifier(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                min_samples_leaf=min_samples_leaf,
+                random_state=random_state + fold_i,
+            )
+            winning_calibration = fit_calibrated_classifier_with_purged_cv(
+                rf_template,
+                X_train,
+                y_train,
+                t0_train,
+                t1_train,
+                weight_train,
+                X_hold,
+                y_hold,
+                n_splits=inner_n_splits,
+                embargo_pct=embargo_pct,
+            )
+            winning_estimator = "rf"
+        winning_brier = min(winning_calibration.brier_isotonic, winning_calibration.brier_sigmoid)
 
         # ---- XGBoost mirror (0-5 audit V3) ---------------------------------
         if compare_with_xgboost:
@@ -365,6 +433,15 @@ def train_brain_two(  # noqa: PLR0915 — single linear pipeline; splitting harm
         cal_proba = _positive_class_proba(winning_calibration.calibrated, X_hold)
         brier_cal = float(brier_score_loss(y_hold, cal_proba))
 
+        if collect_oos_predictions:
+            oos_folds.append(
+                FoldOOS(
+                    fold_index=fold_i,
+                    holdout_indices=holdout_idx.astype(np.int64, copy=True),
+                    calibrated_proba=cal_proba.astype(np.float64, copy=True),
+                )
+            )
+
         naive_proba = _naive_baseline_proba(y_train, holdout_idx.size)
         brier_naive = float(brier_score_loss(y_hold, naive_proba))
 
@@ -394,4 +471,5 @@ def train_brain_two(  # noqa: PLR0915 — single linear pipeline; splitting harm
         last_calibration=last_calibration,
         n_estimators=n_estimators,
         halted_at_mda_upstream=False,
+        oos_predictions=oos_folds if collect_oos_predictions else None,
     )
