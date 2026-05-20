@@ -28,6 +28,7 @@ from afml.control_plane.security import (
     InvalidSignatureError,
     InvalidTOTPError,
     ReplayError,
+    StaleTimestampError,
 )
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "InvalidSignatureError",
     "InvalidTOTPError",
     "ReplayError",
+    "StaleTimestampError",
     "create_app",
     "get_deps",
 ]

@@ -1,5 +1,5 @@
 import { ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -33,11 +33,19 @@ export function ApprovalModal({ strategy }: Props) {
   const [totpCode, setTotpCode] = useState("");
   const approve = useApprove();
 
-  const message = approvalMessage(strategy.experiment_id);
+  // Fresh timestamp captured each time the modal opens — the CEO must sign +
+  // submit within the backend's ±60 s replay window (audit V1).
+  const timestampMs = useMemo(() => Date.now(), [open]);
+  const message = approvalMessage(strategy.experiment_id, timestampMs);
 
   const handleSubmit = () => {
     approve.mutate(
-      { experiment_id: strategy.experiment_id, signed_token: signedToken.trim(), totp_code: totpCode.trim() },
+      {
+        experiment_id: strategy.experiment_id,
+        timestamp_ms: timestampMs,
+        signed_token: signedToken.trim(),
+        totp_code: totpCode.trim(),
+      },
       {
         onSuccess: () => {
           setOpen(false);

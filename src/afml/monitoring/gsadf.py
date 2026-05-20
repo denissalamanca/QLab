@@ -44,6 +44,12 @@ DEFAULT_MIN_WINDOW_FRAC: float = 0.2
 DEFAULT_N_SIMULATIONS: int = 199
 DEFAULT_QUANTILE: float = 0.95
 _TINY: float = 1e-12
+# AFML 0-9 final integration audit V5: a perfectly stagnant window (price
+# flatlined for an illiquid session) makes every lagged difference zero, so the
+# ADF design matrix is singular. Below this variance floor the level series
+# carries no explosive-root evidence — return 0.0 instead of fitting a
+# degenerate (singular) regression that would yield -inf / NaN / LinAlgError.
+_MIN_VARIANCE: float = 1e-10
 
 
 def _effective_min_window(n: int, min_window_frac: float) -> int:
@@ -137,12 +143,20 @@ def gsadf_statistic(
     if not np.all(np.isfinite(y)):
         raise ValueError("series must be finite")
     n = y.size
+    # AFML 0-9 final audit V5: stagnant (zero-variance) series → no explosive
+    # root. Guard before the window sweep so a flatlined market can't drive a
+    # singular regression to -inf.
+    if float(np.var(y)) < _MIN_VARIANCE:
+        return 0.0
     min_window = _effective_min_window(n, min_window_frac)
     # AFML 0-8 final audit V2: too short for a meaningful regression — return
     # 0.0 (no explosive evidence) rather than attempting a degenerate OLS.
     if n < min_window:
         return 0.0
-    return float(_gsadf_statistic(y, min_window))
+    stat = float(_gsadf_statistic(y, min_window))
+    # Defensive: every sub-window was degenerate (-inf). Report no evidence
+    # rather than leaking a non-finite statistic into events / serialization.
+    return stat if np.isfinite(stat) else 0.0
 
 
 def gsadf_critical_value(
@@ -213,6 +227,17 @@ def detect_bubble(
     if not np.all(np.isfinite(y)):
         raise ValueError("series must be finite")
     n = y.size
+    # AFML 0-9 final audit V5: a stagnant (zero-variance) window has no
+    # explosive root and would otherwise produce a singular ADF regression.
+    # Short-circuit to "no bubble" without touching the Monte-Carlo critical
+    # value.
+    if float(np.var(y)) < _MIN_VARIANCE:
+        return BubbleDetectionResult(
+            gsadf_statistic=0.0,
+            critical_value=float("inf"),
+            is_bubble=False,
+            quantile=quantile,
+        )
     min_window = _effective_min_window(n, min_window_frac)
     # AFML 0-8 final audit V2: a series shorter than the minimum window can't
     # support the GSADF regressions — return "no bubble" safely without

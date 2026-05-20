@@ -1,15 +1,16 @@
-"""Phase 9 DoD — control-plane API end-to-end (Blueprint §11.1).
+"""Phase 9 DoD — control-plane API end-to-end (Blueprint §11.1 + audit V1).
 
 Asserts the Definition-of-Done:
-- ``/execution/approve`` rejects unsigned **or** invalid-TOTP requests (403)
-  and only deploys on a valid signature + live TOTP.
+- ``/execution/approve`` rejects unsigned, invalid-TOTP, **or stale-timestamp**
+  requests (403) and only deploys on a valid signature + live TOTP + fresh ts.
 - ``/emergency/flatten`` propagates to the Agent-7 mock and closes all
-  simulated positions (and refuses an unsigned request).
+  simulated positions (and refuses unsigned / replayed requests).
 - ``/registry/strategies`` surfaces CPCV-validated strategies awaiting sign-off.
 """
 
 from __future__ import annotations
 
+import time
 from uuid import uuid4
 
 import pytest
@@ -19,6 +20,10 @@ from afml.crypto import approval_message, current_totp, flatten_message, sign_me
 from tests.unit.phase9.conftest import CPHarness
 
 pytestmark = pytest.mark.phase9
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 # --------------------------------------------------------------- registry list
@@ -42,6 +47,7 @@ def test_approve_rejects_unsigned_request(harness: CPHarness) -> None:
         "/api/v1/execution/approve",
         json={
             "experiment_id": str(harness.experiment_id),
+            "timestamp_ms": _now_ms(),
             "signed_token": "00" * 64,
             "totp_code": current_totp(harness.totp_secret),
         },
@@ -56,6 +62,7 @@ def test_approve_rejects_empty_signature(harness: CPHarness) -> None:
         "/api/v1/execution/approve",
         json={
             "experiment_id": str(harness.experiment_id),
+            "timestamp_ms": _now_ms(),
             "signed_token": "",
             "totp_code": current_totp(harness.totp_secret),
         },
@@ -65,11 +72,13 @@ def test_approve_rejects_empty_signature(harness: CPHarness) -> None:
 
 def test_approve_rejects_invalid_totp(harness: CPHarness) -> None:
     """Valid signature but wrong TOTP → still rejected (mandatory 2FA)."""
-    signature = sign_message(harness.private_key, approval_message(str(harness.experiment_id)))
+    ts = _now_ms()
+    signature = sign_message(harness.private_key, approval_message(str(harness.experiment_id), ts))
     resp = harness.client.post(
         "/api/v1/execution/approve",
         json={
             "experiment_id": str(harness.experiment_id),
+            "timestamp_ms": ts,
             "signed_token": signature,
             "totp_code": "000000",
         },
@@ -79,12 +88,34 @@ def test_approve_rejects_invalid_totp(harness: CPHarness) -> None:
     assert exp is not None and exp.is_deployed is False
 
 
-def test_approve_accepts_valid_signature_and_totp(harness: CPHarness) -> None:
-    signature = sign_message(harness.private_key, approval_message(str(harness.experiment_id)))
+def test_approve_rejects_stale_timestamp(harness: CPHarness) -> None:
+    """Audit V1: a correctly-signed payload older than 60 s is rejected (replay)."""
+    stale_ts = _now_ms() - 61_000
+    signature = sign_message(
+        harness.private_key, approval_message(str(harness.experiment_id), stale_ts)
+    )
     resp = harness.client.post(
         "/api/v1/execution/approve",
         json={
             "experiment_id": str(harness.experiment_id),
+            "timestamp_ms": stale_ts,
+            "signed_token": signature,
+            "totp_code": current_totp(harness.totp_secret),
+        },
+    )
+    assert resp.status_code == 403
+    exp = harness.repo.get(harness.experiment_id)
+    assert exp is not None and exp.is_deployed is False
+
+
+def test_approve_accepts_valid_signature_and_totp(harness: CPHarness) -> None:
+    ts = _now_ms()
+    signature = sign_message(harness.private_key, approval_message(str(harness.experiment_id), ts))
+    resp = harness.client.post(
+        "/api/v1/execution/approve",
+        json={
+            "experiment_id": str(harness.experiment_id),
+            "timestamp_ms": ts,
             "signed_token": signature,
             "totp_code": current_totp(harness.totp_secret),
         },
@@ -106,11 +137,13 @@ def test_approve_accepts_valid_signature_and_totp(harness: CPHarness) -> None:
 
 def test_approve_unknown_experiment_returns_404(harness: CPHarness) -> None:
     unknown = uuid4()
-    signature = sign_message(harness.private_key, approval_message(str(unknown)))
+    ts = _now_ms()
+    signature = sign_message(harness.private_key, approval_message(str(unknown), ts))
     resp = harness.client.post(
         "/api/v1/execution/approve",
         json={
             "experiment_id": str(unknown),
+            "timestamp_ms": ts,
             "signed_token": signature,
             "totp_code": current_totp(harness.totp_secret),
         },
@@ -123,11 +156,13 @@ def test_flatten_closes_all_positions(harness: CPHarness) -> None:
     assert len(harness.broker.open_positions()) == 2
 
     nonce = "flatten-001"
-    signature = sign_message(harness.private_key, flatten_message(nonce))
+    ts = _now_ms()
+    signature = sign_message(harness.private_key, flatten_message(nonce, ts))
     resp = harness.client.post(
         "/api/v1/emergency/flatten",
         json={
             "nonce": nonce,
+            "timestamp_ms": ts,
             "signed_token": signature,
             "reason": "max drawdown breach",
             "reference_prices": {"EURUSD": 1.09, "BTCUSD": 61_000.0},
@@ -150,7 +185,12 @@ def test_flatten_closes_all_positions(harness: CPHarness) -> None:
 def test_flatten_rejects_unsigned_request(harness: CPHarness) -> None:
     resp = harness.client.post(
         "/api/v1/emergency/flatten",
-        json={"nonce": "x", "signed_token": "00" * 64, "reason": "spoofed"},
+        json={
+            "nonce": "x",
+            "timestamp_ms": _now_ms(),
+            "signed_token": "00" * 64,
+            "reason": "spoofed",
+        },
     )
     assert resp.status_code == 403
     # Positions untouched — a forged kill-switch must not fire.
@@ -159,8 +199,14 @@ def test_flatten_rejects_unsigned_request(harness: CPHarness) -> None:
 
 def test_flatten_replay_is_rejected(harness: CPHarness) -> None:
     nonce = "flatten-replay"
-    signature = sign_message(harness.private_key, flatten_message(nonce))
-    body = {"nonce": nonce, "signed_token": signature, "reason": "first call"}
+    ts = _now_ms()
+    signature = sign_message(harness.private_key, flatten_message(nonce, ts))
+    body = {
+        "nonce": nonce,
+        "timestamp_ms": ts,
+        "signed_token": signature,
+        "reason": "first call",
+    }
 
     first = harness.client.post("/api/v1/emergency/flatten", json=body)
     assert first.status_code == 200

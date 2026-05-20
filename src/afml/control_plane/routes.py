@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 
 from afml.control_plane.deps import ControlPlaneDeps, get_deps
 from afml.control_plane.schemas import (
@@ -43,26 +44,32 @@ def health() -> HealthResponse:
 
 
 @router.get("/registry/strategies", response_model=list[StrategyOut])
-def list_strategies(deps: DepsDep) -> list[StrategyOut]:
+async def list_strategies(deps: DepsDep) -> list[StrategyOut]:
     """Return all CPCV-validated strategies awaiting CEO sign-off (§11.1).
 
     A strategy qualifies when it has cleared validation (``pbo`` / ``dsr``
     populated), carries the ``completed`` status, and is not yet deployed.
+
+    AFML 0-9 final audit V2: the blocking SQLite read runs in a worker thread
+    via ``run_in_threadpool`` so a slow query (or a concurrent agent write)
+    never stalls the ASGI event loop.
     """
-    experiments = deps.repository.awaiting_signoff()
+    experiments = await run_in_threadpool(deps.repository.awaiting_signoff)
     return [StrategyOut.model_validate(exp) for exp in experiments]
 
 
 @router.post("/execution/approve", response_model=ApproveResponse)
-def approve(req: ApproveRequest, deps: DepsDep) -> ApproveResponse:
+async def approve(req: ApproveRequest, deps: DepsDep) -> ApproveResponse:
     """Cryptographically authorise a strategy Paper → Live (§11.1).
 
-    Rejects (HTTP 403) any request whose Ed25519 signature does not verify
-    against ``afml:approve:<experiment_id>`` **or** whose TOTP code is invalid.
-    On success the experiment is marked deployed and a ``CEOApproval`` event is
-    published to the agent bus.
+    Rejects (HTTP 403) any request whose timestamp is stale (>±60 s), whose
+    Ed25519 signature does not verify against
+    ``afml:approve:<experiment_id>:<timestamp_ms>``, **or** whose TOTP code is
+    invalid. On success the experiment is marked deployed and a ``CEOApproval``
+    event is published to the agent bus. Blocking SQLite reads/writes are
+    offloaded via ``run_in_threadpool`` (audit V2).
     """
-    exp = deps.repository.get(req.experiment_id)
+    exp = await run_in_threadpool(deps.repository.get, req.experiment_id)
     if exp is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -70,11 +77,13 @@ def approve(req: ApproveRequest, deps: DepsDep) -> ApproveResponse:
         )
 
     try:
-        deps.authenticator.verify_approval(req.experiment_id, req.signed_token, req.totp_code)
+        deps.authenticator.verify_approval(
+            req.experiment_id, req.timestamp_ms, req.signed_token, req.totp_code
+        )
     except CEOAuthError as err:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(err)) from err
 
-    deps.repository.mark_deployed(req.experiment_id, deployed=True)
+    await run_in_threadpool(deps.repository.mark_deployed, req.experiment_id, True)
     deps.event_publisher.publish(
         CEOApproval(
             producer=_PRODUCER,
@@ -91,22 +100,24 @@ def approve(req: ApproveRequest, deps: DepsDep) -> ApproveResponse:
 
 
 @router.post("/emergency/flatten", response_model=FlattenResponse)
-def emergency_flatten(req: FlattenRequest, deps: DepsDep) -> FlattenResponse:
+async def emergency_flatten(req: FlattenRequest, deps: DepsDep) -> FlattenResponse:
     """Liquidate every open position (§11.1 kill-switch).
 
-    Rejects (HTTP 403) any request whose Ed25519 signature does not verify
-    against ``afml:flatten:<nonce>`` (TOTP is intentionally *not* required so
-    the emergency path is never blocked by a code window). On success it
-    propagates to Agent 7 (the :class:`ExecutionEngine`), closing all simulated
-    positions, resets the risk budget, and publishes an ``EmergencyFlatten``
-    event to the agent bus.
+    Rejects (HTTP 403) any request whose timestamp is stale (>±60 s) or whose
+    Ed25519 signature does not verify against
+    ``afml:flatten:<nonce>:<timestamp_ms>`` (TOTP is intentionally *not*
+    required so the emergency path is never blocked by a code window); the
+    single-use nonce blocks replay within the window. On success it propagates
+    to Agent 7 (the :class:`ExecutionEngine`), closing all simulated positions,
+    resets the risk budget, and publishes an ``EmergencyFlatten`` event. The
+    broker round-trip runs in a worker thread (audit V2).
     """
     try:
-        deps.authenticator.verify_flatten(req.nonce, req.signed_token)
+        deps.authenticator.verify_flatten(req.nonce, req.timestamp_ms, req.signed_token)
     except CEOAuthError as err:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(err)) from err
 
-    fills = deps.execution_engine.emergency_flatten(req.reference_prices)
+    fills = await run_in_threadpool(deps.execution_engine.emergency_flatten, req.reference_prices)
     deps.event_publisher.publish(
         EmergencyFlatten(producer=_PRODUCER, signed_token=req.signed_token, reason=req.reason)
     )

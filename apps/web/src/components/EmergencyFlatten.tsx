@@ -24,14 +24,21 @@ import { flattenMessage } from "@/lib/api";
  */
 export function EmergencyFlatten() {
   const [open, setOpen] = useState(false);
+  // Fresh nonce + timestamp per open — layered anti-replay (audit V1).
   const nonce = useMemo(() => crypto.randomUUID(), [open]);
+  const timestampMs = useMemo(() => Date.now(), [open]);
   const [reason, setReason] = useState("");
   const [signedToken, setSignedToken] = useState("");
   const flatten = useFlatten();
 
   const handleSubmit = () => {
     flatten.mutate(
-      { nonce, signed_token: signedToken.trim(), reason: reason.trim() || "manual kill-switch" },
+      {
+        nonce,
+        timestamp_ms: timestampMs,
+        signed_token: signedToken.trim(),
+        reason: reason.trim() || "manual kill-switch",
+      },
       {
         onSuccess: () => {
           setOpen(false);
@@ -61,7 +68,7 @@ export function EmergencyFlatten() {
           <div>
             <label className="text-xs font-medium text-muted-foreground">Message to sign</label>
             <code className="mt-1 block break-all rounded-md bg-secondary px-3 py-2 text-xs" data-testid="flatten-message">
-              {flattenMessage(nonce)}
+              {flattenMessage(nonce, timestampMs)}
             </code>
           </div>
           <div>

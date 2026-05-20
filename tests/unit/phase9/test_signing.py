@@ -18,16 +18,19 @@ pytestmark = pytest.mark.phase9
 
 def test_sign_verify_roundtrip() -> None:
     private_key, public_key = generate_keypair()
-    message = approval_message("11111111-1111-1111-1111-111111111111")
+    message = approval_message("11111111-1111-1111-1111-111111111111", 1_700_000_000_000)
     signature = sign_message(private_key, message)
     assert verify_signature(public_key, message, signature) is True
 
 
 def test_verify_rejects_tampered_message() -> None:
     private_key, public_key = generate_keypair()
-    signature = sign_message(private_key, approval_message("exp-a"))
+    signature = sign_message(private_key, approval_message("exp-a", 1_700_000_000_000))
     # Same signature, different message → must not verify.
-    assert verify_signature(public_key, approval_message("exp-b"), signature) is False
+    assert (
+        verify_signature(public_key, approval_message("exp-b", 1_700_000_000_000), signature)
+        is False
+    )
 
 
 def test_verify_rejects_wrong_public_key() -> None:
@@ -51,12 +54,13 @@ def test_public_key_from_private_matches_generation() -> None:
 
 
 def test_canonical_message_format() -> None:
-    assert approval_message("e1") == "afml:approve:e1"
-    assert flatten_message("n1") == "afml:flatten:n1"
+    # Audit V1: the timestamp is bound into the signed message.
+    assert approval_message("e1", 1_700_000_000_000) == "afml:approve:e1:1700000000000"
+    assert flatten_message("n1", 1_700_000_000_000) == "afml:flatten:n1:1700000000000"
 
 
 def test_signatures_are_deterministic() -> None:
     # Ed25519 (RFC 8032) signing is deterministic — same key + message ⇒ same sig.
     private_key, _ = generate_keypair()
-    message = flatten_message("nonce-42")
+    message = flatten_message("nonce-42", 1_700_000_000_000)
     assert sign_message(private_key, message) == sign_message(private_key, message)

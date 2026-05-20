@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from afml.control_plane import (
@@ -33,6 +34,7 @@ from afml.execution.risk import RiskEngine
 class CPHarness:
     """Bundle of everything a control-plane test needs to drive + assert."""
 
+    app: FastAPI
     client: TestClient
     private_key: bytes
     public_key: bytes
@@ -88,8 +90,10 @@ def harness(tmp_db_url: str) -> CPHarness:
         authenticator=authenticator,
         event_publisher=publisher,
     )
-    client = TestClient(create_app(deps))
+    app = create_app(deps)
+    client = TestClient(app)
     return CPHarness(
+        app=app,
         client=client,
         private_key=private_key,
         public_key=public_key,
