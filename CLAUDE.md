@@ -43,7 +43,7 @@ The run/ops layer per [`docs/OPERATIONS_ROADMAP.md`](docs/OPERATIONS_ROADMAP.md)
 | # | Milestone | Status | PR |
 |---|---|---|---|
 | M0 | Genesis & Operator Bootstrap (`afml` CLI, enroll-ceo, doctor, CI) | ✅ shipped | [#21](https://github.com/denissalamanca/QLab/pull/21) |
-| M1 | Research Harness & Sweep (plateau selection, two-stage certification, registry population) | ✅ shipped | — |
+| M1 | Research Harness & Sweep (plateau selection, two-stage certification, registry population) | 🚧 in review | [#22](https://github.com/denissalamanca/QLab/pull/22) |
 | M2 | Model Persistence & Artifact Lifecycle | — | — |
 | M3 | 2026 Out-of-Sample Walk-Forward | — | — |
 | M4 | Autonomous Agent Runtime (orchestrator + 8 agents) | — | — |
