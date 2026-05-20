@@ -133,6 +133,15 @@ Five boundary vulnerabilities patched before live clearance. Edge cases covered 
 - **V4 — execution race condition.** ``ExecutionEngine`` gained an ``asyncio.Lock`` (lazily bound to the running loop) + ``execute_batch_async`` / ``emergency_flatten_async``. The lock serializes **fetch live margin/positions → size → dispatch** so two concurrently-arriving signals can't both size against a stale margin snapshot and over-leverage. Blocking broker round-trips run via ``asyncio.to_thread``.
 - **V5 — GSADF stagnant-tick guard.** ``gsadf_statistic`` / ``detect_bubble`` short-circuit to ``0.0`` (no explosive root) when ``np.var(y) < 1e-10`` — a flatlined window can't drive a singular ADF design matrix (and the statistic is clamped finite, never ``-inf``).
 
+## AFML 0-9 final polishing audit (runtime hardening)
+
+Four runtime-killer API/framework/hardware bottlenecks patched before live. Edge cases in ``tests/unit/phase9/test_final_polishing_audit.py``.
+
+- **P1 — GMM has no ``.cdf()``.** ``sklearn.mixture.GaussianMixture`` exposes only ``score_samples`` / ``predict_proba``. The MoG bet-sizing fallback (``afml.execution.bet_sizing._mixture_cdf_sizes``) computes the mixture CDF *manually* as ``Σ_k w_k·Φ((z−μ_k)/σ_k)`` via ``scipy.stats.norm.cdf`` (weights/means/√covariances from the fitted GMM) — never ``gmm.cdf``. A dedicated test validates it against an independent recompute + asserts the attribute absence.
+- **P2 — GSADF off the event loop.** GSADF is ``O(T²)`` nested OLS; running it per raw tick pegs CPU and starves Agent 7. ``StructuralBreakMonitor.check_regime_async`` offloads the sweep via ``loop.run_in_executor`` (returns the identical ``RegimeCheck``), and Agent 8 binds **only** to ``BAR_GENERATED`` (information-bar) events — never ``NEW_TICK``.
+- **P3 — persistent TOTP seed.** ``afml.crypto.get_or_create_ceo_totp_secret`` loads the seed from the Keychain or, on first run, generates + persists it and echoes the ``otpauth://`` provisioning URI once. ``apps/api/main.py`` uses it so the CEO's authenticator survives every restart (no ephemeral-seed lockout). ``echo`` is injectable for tests.
+- **P4 — strict CORS.** ``create_app`` sets ``CORSMiddleware`` with explicit Vite origins (``localhost``/``127.0.0.1:5173``, never ``"*"``), ``allow_credentials=True``, ``allow_methods=["*"]`` (so the browser preflight is never blocked), ``allow_headers=["*"]``.
+
 ## Workflow — PR per milestone
 
 Remote: **<https://github.com/denissalamanca/QLab>** (default branch `main`).

@@ -46,11 +46,16 @@ def create_app(
         description="CEO Human-in-the-Loop governance API (Blueprint §11).",
         version="0.9.0",
     )
+    # AFML 0-9 polishing audit V4: explicit CORS for the Vite dev origin.
+    # allow_methods=["*"] so the browser's OPTIONS preflight (and any future
+    # verb) is never blocked — a missing preflight allowance renders the
+    # dashboard empty. Origins stay explicit (never "*") for an institutional
+    # app, and credentials are allowed for the signed control-plane calls.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),
         allow_credentials=True,
-        allow_methods=["GET", "POST"],
+        allow_methods=["*"],
         allow_headers=["*"],
     )
     if deps is not None:
