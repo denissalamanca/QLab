@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -28,6 +29,21 @@ from afml.core.registry.schema import (
     Experiment,
     metadata,
 )
+
+
+def _ensure_sqlite_parent_dir(db_url: str) -> None:
+    """Create the parent directory of a SQLite *file* DB so the engine can open it.
+
+    SQLite will not create intermediate directories; a URL like
+    ``sqlite:///./artifacts/alpha_registry.db`` fails with ``unable to open
+    database file`` when ``./artifacts`` is missing. In-memory URLs are skipped.
+    """
+    if not db_url.startswith("sqlite") or "///" not in db_url:
+        return
+    path_part = db_url.split("///", 1)[-1]
+    if not path_part or path_part == ":memory:":
+        return
+    Path(path_part).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
 
 def _hash_hyperparameters(hparams: dict[str, Any]) -> str:
@@ -50,6 +66,7 @@ class AlphaRegistryRepository:
         wal_mode: bool = True,
         echo: bool = False,
     ) -> None:
+        _ensure_sqlite_parent_dir(db_url)
         self._engine: Engine = create_engine(db_url, echo=echo, future=True)
 
         # SQLite WAL mode → concurrent reads alongside writes; required for high-
