@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from afml.research.artifacts import (
+    _to_jsonable,
     read_run,
     render_research_run_md,
     run_to_dict,
@@ -136,6 +137,25 @@ def _sweep_cert(*, with_plateau: bool, passed: bool) -> SweepCertification:
 
 
 # ----------------------------------------------------------------- serialization
+
+
+def test_to_jsonable_coerces_numpy_scalars() -> None:
+    """np.bool_ (from np.isfinite / np.float64 comparisons) etc. must serialise."""
+    raw = {
+        "valid": np.True_,
+        "n": np.int64(5),
+        "x": np.float64(1.5),
+        "inf": np.float64(np.inf),
+        "nested": [np.False_, {"y": np.int32(3)}],
+    }
+    out = _to_jsonable(raw)
+    json.dumps(out)  # must not raise (numpy scalars are not JSON-serialisable)
+    assert out["valid"] is True and isinstance(out["valid"], bool)
+    assert out["n"] == 5 and isinstance(out["n"], int)
+    assert out["x"] == pytest.approx(1.5) and isinstance(out["x"], float)
+    assert out["inf"] is None  # non-finite → null
+    assert out["nested"][0] is False
+    assert out["nested"][1]["y"] == 3
 
 
 def test_run_to_dict_is_json_safe() -> None:

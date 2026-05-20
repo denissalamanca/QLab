@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from afml.research.precompute import AssetPrecompute
 from afml.research.sweep import CertificationResult, SweepCertification, SweepResult
 
@@ -31,6 +33,27 @@ def _num(value: float | None) -> float | None:
     if value is None or not math.isfinite(value):
         return None
     return float(value)
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """Recursively coerce numpy scalars to native types so ``json.dumps`` can't fail.
+
+    ``np.bool_`` (from ``np.isfinite`` / ``np.float64`` comparisons leaking into
+    ``TrialResult.valid`` / ``CertificationResult.passed``), ``np.integer`` and
+    ``np.floating`` are not JSON-serialisable; non-finite floats map to ``None``.
+    The Phase-9 V3 serialization-hardening pattern, applied to research artifacts.
+    """
+    if isinstance(obj, dict):
+        return {k: _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return _num(float(obj))
+    return obj
 
 
 def _fmt(value: float | None, places: int = 4) -> str:
@@ -138,7 +161,8 @@ def run_to_dict(
             "ffd_window": pc.ffd_window,
             "ffd_adf_pvalue": _num(pc.ffd_adf_pvalue),
         }
-    return record
+    # Final defensive pass: coerce any numpy scalar that slipped through.
+    return {key: _to_jsonable(value) for key, value in record.items()}
 
 
 def write_run(

@@ -299,7 +299,7 @@ def run_trial(
         periods_per_year=dataset.periods_per_year,
     )
 
-    valid = beats_baseline and objective is not None and np.isfinite(objective)
+    valid = bool(beats_baseline and objective is not None and np.isfinite(objective))
     exp_id = _record(
         registry,
         "completed",
