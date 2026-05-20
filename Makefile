@@ -63,6 +63,9 @@ phase9: lint type
 m0: lint type
 	uv run pytest -q -m m0
 
+m1: lint type
+	uv run pytest -q -m m1
+
 # Cross-phase integration tests (AFML 0-4 audit clearance + Phase 1→4 end-to-end).
 integration: lint type
 	uv run pytest -q -m integration

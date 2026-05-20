@@ -42,14 +42,24 @@ The run/ops layer per [`docs/OPERATIONS_ROADMAP.md`](docs/OPERATIONS_ROADMAP.md)
 
 | # | Milestone | Status | PR |
 |---|---|---|---|
-| M0 | Genesis & Operator Bootstrap (`afml` CLI, enroll-ceo, doctor, CI) | 🚧 in progress | — |
-| M1 | Historical Ingestion Sweep (research 2020–2025; registry population) | next | — |
+| M0 | Genesis & Operator Bootstrap (`afml` CLI, enroll-ceo, doctor, CI) | ✅ shipped | [#21](https://github.com/denissalamanca/QLab/pull/21) |
+| M1 | Research Harness & Sweep (plateau selection, two-stage certification, registry population) | ✅ shipped | — |
 | M2 | Model Persistence & Artifact Lifecycle | — | — |
 | M3 | 2026 Out-of-Sample Walk-Forward | — | — |
 | M4 | Autonomous Agent Runtime (orchestrator + 8 agents) | — | — |
 | M5 | Control-Plane Awakening (Redis wiring + live feeds) | — | — |
 | M6 | Broker Bridge (MT5 paper trading) | — | — |
 | M7 | Agentic Soak & Disaster Drill → live | — | — |
+
+### M1 research-harness contracts (`src/afml/research/`)
+
+- **Bar granularity is regime-derived, not curve-fit** (`docs/specs/M1_bar_granularity.md`). A `HoldingRegime` fixes the economic timescale; the first-passage law gives `Δ = mean_hold / pt²` and `V = round(max_hold / Δ)`. The JB bar-type tournament is **constrained to that granularity** (pure JB minimisation is degenerate — CLT drives it to the finest bar). Default `day` (mean-hold 6h); the system sweeps `scalp/day/swing/position` — never hard-coded to day-trading.
+- **Plateau selection (anti-curve-fit).** `select_plateau` — Neighborhood-Minimax `R(g)=min(s(g), neighbors)`; full-interior eligibility (a boundary point can't claim robustness); **no free tuning constant**; reject (`selected=None`) when `R(g*) < s_floor` — "no stable configuration" is a valid outcome, never a manufactured strategy.
+- **Surface objective** `s(g)` = median PurgedWalkForward OOS **strategy** Sharpe (`oos_strategy_sharpe`: bet-size each OOS proba via `calculate_bet_size`, apply side, annualise). A config is valid for the surface only if `events ≥ 500` **and** calibrated Brier beats naive. Recall is intentionally absent (undefined OOS).
+- **Estimator split (compute).** Surface = uniqueness-weighted **RandomForest** (`estimator="rf"`, `n_jobs=-1`, no bootstrap, O(n log n)). Certification cohort = a RF **complexity ladder** (+ XGBoost) — the right cohort for PBO (model complexity is the overfitting axis). The sequential-bootstrap **SBRF is O(n²)** → intractable inside CPCV/target-shuffling; the deployable weighted SBRF is fit in M2 on the certified config.
+- **Two-stage certification.** `sweep_and_certify`: surface sweep → plateau centre → `certify` runs `validate_strategy` (CPCV → PBO, DSR, target-shuffling) and writes `(pbo, dsr)` back to the winner's registry row via `record_validation`. `n_trials` = per-`(asset, family)` cohort count (≥ 30 after one full grid → clears the DSR cold-start quarantine). Typed early-exits (`insufficient_events`, `halted_at_mda`, `data_leakage`, `degenerate_cpcv`) never crash a batch.
+- **Every config is a registry trial** (`completed` / `FAILED_AT_MDA`) — drives the DSR `K`; the sweep is **resumable** through registry dedup.
+- **CLI + artifacts.** `afml research sweep|select|report`. One JSON run artifact per `(asset, family)` (resumable, auditable) + the `RESEARCH_RUN.md` evidence sheet (bar JB, events, plateau coord + worst-neighbor `R`, Brier vs. naive, surviving clusters, PBO, DSR). Markers: `make m1`.
 
 ## Build commands
 

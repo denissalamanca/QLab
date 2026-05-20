@@ -40,13 +40,14 @@ from afml.modeling.concurrency import (
     concurrency_count,
     indicator_matrix,
 )
-from afml.modeling.pipeline import BrainTwoResult, train_brain_two
+from afml.modeling.pipeline import BrainTwoResult, FoldOOS, train_brain_two
 from afml.modeling.sbrf import SequentiallyBootstrappedRandomForest
 from afml.modeling.sequential_bootstrap import sequential_bootstrap
 
 __all__ = [
     "BrainTwoResult",
     "CalibrationResult",
+    "FoldOOS",
     "PurgedCVCalibratedSBRF",
     "SequentiallyBootstrappedRandomForest",
     "average_uniqueness",
