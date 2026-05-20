@@ -15,6 +15,10 @@ Two documents in `docs/` define the work and supersede any other source of truth
 
 When the PRD and Blueprint disagree, the Blueprint wins (it's the engineering contract).
 
+Once the AFML build phases (0–9) shipped, the **operational** build (turning the validated engine into an autonomous live lab) is governed by a third binding doc:
+
+- [Master Operational Roadmap (M0–M7)](docs/OPERATIONS_ROADMAP.md) — ✅ CEO-approved; deliverables + DoD per operational milestone, the locked data windows (research 2020–2025 / OOS 2026 YTD), the autonomous-vs-HITL governance contract, and the resolved decisions log.
+
 ## Phase status
 
 | # | Phase | Agent | Status | Blueprint § | PR |
@@ -31,6 +35,21 @@ When the PRD and Blueprint disagree, the Blueprint wins (it's the engineering co
 | 9 | Control Plane (React/FastAPI) | — | ✅ shipped | §11 | [#18](https://github.com/denissalamanca/QLab/pull/18) |
 
 **Strict phase-by-phase build.** `make phase{N-1}` must be green before any code is written for phase N. No vertical-slice shortcuts. No relaxing of unit-test assertions to make them pass — fix the underlying code.
+
+## Operational milestones (post-Phase-9)
+
+The run/ops layer per [`docs/OPERATIONS_ROADMAP.md`](docs/OPERATIONS_ROADMAP.md). Same discipline: one milestone per PR, gated on its DoD, Lead-Quant audit between milestones.
+
+| # | Milestone | Status | PR |
+|---|---|---|---|
+| M0 | Genesis & Operator Bootstrap (`afml` CLI, enroll-ceo, doctor, CI) | 🚧 in progress | — |
+| M1 | Historical Ingestion Sweep (research 2020–2025; registry population) | next | — |
+| M2 | Model Persistence & Artifact Lifecycle | — | — |
+| M3 | 2026 Out-of-Sample Walk-Forward | — | — |
+| M4 | Autonomous Agent Runtime (orchestrator + 8 agents) | — | — |
+| M5 | Control-Plane Awakening (Redis wiring + live feeds) | — | — |
+| M6 | Broker Bridge (MT5 paper trading) | — | — |
+| M7 | Agentic Soak & Disaster Drill → live | — | — |
 
 ## Build commands
 
