@@ -15,6 +15,7 @@ from typing import Literal
 import numpy as np
 import polars as pl
 
+from afml.data.bars.streaming import build_information_bars_streaming
 from afml.data.bars.tick_imbalance import build_tick_imbalance_bars
 from afml.data.bars.tick_run import build_tick_run_bars
 from afml.data.bars.time_bars import build_time_bars
@@ -140,25 +141,73 @@ def select_bar_type(
     for interval in time_intervals:
         bars = build_time_bars(ticks, interval=interval)
         jb, n = _score(bars)
-        entry = BarTypeSweepResult("time", interval, jb, n)
-        sweep.append(entry)
+        sweep.append(BarTypeSweepResult("time", interval, jb, n))
         bars_by_key[("time", interval)] = bars
 
     for et in tick_expected_ticks:
         bars = build_tick_imbalance_bars(ticks, initial_expected_ticks=et)
         jb, n = _score(bars)
-        entry = BarTypeSweepResult("tick_imbalance", et, jb, n)
-        sweep.append(entry)
+        sweep.append(BarTypeSweepResult("tick_imbalance", et, jb, n))
         bars_by_key[("tick_imbalance", et)] = bars
 
     for et in tick_expected_ticks:
         bars = build_tick_run_bars(ticks, initial_expected_ticks=et)
         jb, n = _score(bars)
-        entry = BarTypeSweepResult("tick_run", et, jb, n)
-        sweep.append(entry)
+        sweep.append(BarTypeSweepResult("tick_run", et, jb, n))
         bars_by_key[("tick_run", et)] = bars
 
-    # Sort by JB ascending; walk down until we find a stable-plateau candidate.
+    return _assemble_selection(sweep, bars_by_key, plateau_factor)
+
+
+def select_bar_type_streaming(
+    ticks: pl.LazyFrame,
+    *,
+    time_intervals: tuple[str, ...] = DEFAULT_TIME_INTERVALS,
+    tick_expected_ticks: tuple[float, ...] = DEFAULT_TICK_EXPECTED,
+    plateau_factor: float = 2.0,
+    chunk_rows: int = 5_000_000,
+) -> BarSelection:
+    """Memory-bounded :func:`select_bar_type` for full-history (100M+ tick) assets.
+
+    Builds every candidate via the streaming path (time bars through Polars'
+    streaming engine, TIB/TRB through the resumable row-slice kernels) so the
+    full tick frame is never materialised. The JB scoring + plateau selection
+    are identical to :func:`select_bar_type`.
+    """
+    sweep: list[BarTypeSweepResult] = []
+    bars_by_key: dict[tuple[BarType, float | str], pl.DataFrame] = {}
+
+    for interval in time_intervals:
+        bars = build_time_bars(ticks, interval=interval, streaming=True)
+        jb, n = _score(bars)
+        sweep.append(BarTypeSweepResult("time", interval, jb, n))
+        bars_by_key[("time", interval)] = bars
+
+    for et in tick_expected_ticks:
+        bars = build_information_bars_streaming(
+            ticks, bar_type="tick_imbalance", initial_expected_ticks=et, chunk_rows=chunk_rows
+        )
+        jb, n = _score(bars)
+        sweep.append(BarTypeSweepResult("tick_imbalance", et, jb, n))
+        bars_by_key[("tick_imbalance", et)] = bars
+
+    for et in tick_expected_ticks:
+        bars = build_information_bars_streaming(
+            ticks, bar_type="tick_run", initial_expected_ticks=et, chunk_rows=chunk_rows
+        )
+        jb, n = _score(bars)
+        sweep.append(BarTypeSweepResult("tick_run", et, jb, n))
+        bars_by_key[("tick_run", et)] = bars
+
+    return _assemble_selection(sweep, bars_by_key, plateau_factor)
+
+
+def _assemble_selection(
+    sweep: list[BarTypeSweepResult],
+    bars_by_key: dict[tuple[BarType, float | str], pl.DataFrame],
+    plateau_factor: float,
+) -> BarSelection:
+    """Sort by JB ascending and walk down to the first stable-plateau winner."""
     ordered = sorted(sweep, key=lambda r: (np.isinf(r.jarque_bera), r.jarque_bera))
     winner: BarTypeSweepResult | None = None
     stable = True

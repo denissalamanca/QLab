@@ -137,6 +137,7 @@ module = [
     "afml.data.ffd",
     "afml.data.bars.tick_imbalance",
     "afml.data.bars.tick_run",
+    "afml.data.bars.streaming",
     "afml.labeling.primary_alphas.cusum",
     "afml.labeling.triple_barrier",
     "afml.labeling.volatility",

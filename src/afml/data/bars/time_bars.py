@@ -10,7 +10,9 @@ from __future__ import annotations
 import polars as pl
 
 
-def build_time_bars(ticks: pl.LazyFrame | pl.DataFrame, interval: str = "1m") -> pl.DataFrame:
+def build_time_bars(
+    ticks: pl.LazyFrame | pl.DataFrame, interval: str = "1m", *, streaming: bool = False
+) -> pl.DataFrame:
     """Aggregate raw ticks into fixed-interval OHLC bars.
 
     Parameters
@@ -18,6 +20,9 @@ def build_time_bars(ticks: pl.LazyFrame | pl.DataFrame, interval: str = "1m") ->
     ticks : Polars frame with columns ``timestamp`` (datetime, UTC), ``bid``,
         ``ask``, ``bid_volume``, ``ask_volume``.
     interval : Polars duration string — e.g. ``"1m"``, ``"5m"``, ``"1h"``.
+    streaming : run the aggregation through Polars' streaming engine so the full
+        tick history is never materialised (Ops M1 hardening for 100M+ tick
+        assets). Identical output to the in-memory path.
 
     Returns
     -------
@@ -25,7 +30,7 @@ def build_time_bars(ticks: pl.LazyFrame | pl.DataFrame, interval: str = "1m") ->
     ``close``, ``volume``, ``n_ticks``. Mid-price is used for OHLC.
     """
     lf = ticks if isinstance(ticks, pl.LazyFrame) else ticks.lazy()
-    return (
+    pipeline = (
         lf
         .with_columns(((pl.col("bid") + pl.col("ask")) / 2.0).alias("mid"))
         .group_by_dynamic("timestamp", every=interval)
@@ -39,5 +44,5 @@ def build_time_bars(ticks: pl.LazyFrame | pl.DataFrame, interval: str = "1m") ->
         )
         .filter(pl.col("n_ticks") > 0)
         .sort("timestamp")
-        .collect()
     )
+    return pipeline.collect(engine="streaming") if streaming else pipeline.collect()

@@ -23,7 +23,7 @@ import polars as pl
 
 from afml.config.assets import AssetSpec, get_asset
 from afml.data import find_optimal_d, load_ticks
-from afml.data.bars.selector import select_bar_type
+from afml.data.bars.selector import select_bar_type_streaming
 from afml.data.bars.time_bars import build_time_bars
 from afml.research.regimes import DEFAULT_REGIME, HoldingRegime
 
@@ -70,19 +70,23 @@ def precompute_asset(
         to candidates at that granularity.
     """
     spec = asset if isinstance(asset, AssetSpec) else get_asset(asset)
-    ticks = load_ticks(spec, start=start, end=end).collect()
-    n_ticks = ticks.height
+    # Stay lazy: a full-history asset (e.g. BTCUSD 2020-2025 ≈ 360M ticks) cannot
+    # be materialised on a workstation. The row count is read from parquet
+    # metadata (no scan) and every bar candidate is built through the streaming
+    # path, so peak memory is bounded by one tick slice — not the whole history.
+    ticks = load_ticks(spec, start=start, end=end)
+    n_ticks = int(ticks.select(pl.len()).collect().item())
 
     # Δ from the regime; build time bars at Δ to read the realised (active) bar
     # count, then size the information-bar candidates to match that count so the
     # JB tournament compares like-for-like granularity.
     interval_minutes = max(1, round(regime.bar_hours * 60.0))
     interval = f"{interval_minutes}m"
-    time_bars = build_time_bars(ticks, interval=interval)
+    time_bars = build_time_bars(ticks, interval=interval, streaming=True)
     b_target = max(time_bars.height, 1)
     expected_ticks = max(float(n_ticks) / b_target, 2.0)
 
-    selection = select_bar_type(
+    selection = select_bar_type_streaming(
         ticks,
         time_intervals=(interval,),
         tick_expected_ticks=(expected_ticks,),
