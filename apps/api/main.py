@@ -25,7 +25,7 @@ from afml.control_plane import (
     create_app,
 )
 from afml.core.registry.repository import AlphaRegistryRepository
-from afml.crypto import CEO_TOTP_SECRET, load_secret
+from afml.crypto import get_or_create_ceo_totp_secret
 from afml.execution.brokers.mock import InMemoryMockBroker
 from afml.execution.pipeline import ExecutionEngine
 from afml.execution.risk import RiskEngine
@@ -39,9 +39,12 @@ def build_app() -> object:
             "AFML_CP_CEO_PUBLIC_KEY_HEX is not set — cannot verify CEO signatures"
         )
 
+    # AFML 0-9 polishing audit V3: load the persisted TOTP seed (or create +
+    # display it once on first boot) so the CEO's authenticator survives every
+    # restart — never a fresh in-memory seed.
     authenticator = CEOAuthenticator(
         public_key_bytes=bytes.fromhex(settings.ceo_public_key_hex),
-        totp_secret=load_secret(CEO_TOTP_SECRET),
+        totp_secret=get_or_create_ceo_totp_secret(),
     )
 
     repository = AlphaRegistryRepository(settings.registry_db_url)

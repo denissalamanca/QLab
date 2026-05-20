@@ -14,10 +14,24 @@ the corresponding Phase 0 event object ready to publish on the message bus:
 The monitor is deliberately transport-free: it *produces* the event object,
 and the agent runtime publishes it. This keeps the detection logic unit-
 testable without a live Redis broker.
+
+**AFML 0-9 polishing audit V2 — GSADF "tick-death" CPU bottleneck.** GSADF is
+``O(T²)`` nested OLS regressions; running it synchronously on every raw
+``NEW_TICK`` would peg a CPU core, overflow the broker queue, and inject huge
+latency into Agent 7. Two rules follow:
+
+1. Agent 8's listener binds to the ``BAR_GENERATED`` (information-bar) event
+   from Phase 1 — **never** raw ticks — so the heavy test runs at *bar*
+   cadence, not *tick* cadence.
+2. Use :meth:`StructuralBreakMonitor.check_regime_async`, which offloads the
+   GSADF computation to a worker thread (``loop.run_in_executor``) so the main
+   message-broker event loop is never blocked.
 """
 
 from __future__ import annotations
 
+import asyncio
+import functools
 from dataclasses import dataclass
 
 import numpy as np
@@ -126,6 +140,30 @@ class StructuralBreakMonitor:
                 critical_value=gsadf.critical_value,
             )
         return RegimeCheck(asset=asset, gsadf=gsadf, chow=chow, event=event)
+
+    async def check_regime_async(
+        self,
+        asset: str,
+        prices: npt.NDArray[np.floating],
+        *,
+        random_state: int = 0,
+    ) -> RegimeCheck:
+        """Non-blocking :meth:`check_regime` for Agent 8's async listener (V2).
+
+        Offloads the CPU-brutal GSADF sweep to the default thread-pool executor
+        via ``loop.run_in_executor`` so the message-broker event loop stays
+        responsive (and Agent 7's execution latency is unaffected) while the
+        test runs. Returns the identical :class:`RegimeCheck` the synchronous
+        path produces.
+
+        Invoke this **only** on ``BAR_GENERATED`` (information-bar) events — not
+        per raw tick — so GSADF runs at bar cadence (see the module docstring).
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            functools.partial(self.check_regime, asset, prices, random_state=random_state),
+        )
 
     def check_drift(
         self,
