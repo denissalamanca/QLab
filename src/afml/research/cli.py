@@ -21,6 +21,7 @@ import typer
 from afml.config.settings import get_settings
 from afml.core.registry import AlphaRegistryRepository
 from afml.research.artifacts import read_run, render_research_run_md, write_run
+from afml.research.diagnostics import render_diagnostics
 from afml.research.grids import FAMILY_GRIDS, get_family_grid
 from afml.research.plateau import Coord, select_plateau
 from afml.research.precompute import precompute_asset
@@ -138,3 +139,33 @@ def _render_report(base: Path, *, out: Path | None = None) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(render_research_run_md(runs), encoding="utf-8")
     return target
+
+
+@research_app.command("diagnose")
+def diagnose(
+    runs_dir: Annotated[
+        Path | None, typer.Option(help="Directory of run artifacts (default: settings).")
+    ] = None,
+    asset: Annotated[str | None, typer.Option(help="Filter to one asset symbol.")] = None,
+    family: Annotated[str | None, typer.Option(help="Filter to one alpha family.")] = None,
+    out: Annotated[Path | None, typer.Option(help="Output path for DIAGNOSTICS.md.")] = None,
+) -> None:
+    """Per-stage observability: the attrition funnel, validity heatmaps, per-stage
+    distributions, and feature-survival frequency — so you can see where the
+    pipeline succeeds or degrades and steer next steps."""
+    base = _runs_base(runs_dir)
+    runs = [read_run(p) for p in sorted(base.rglob("*.json"))]
+    if asset is not None:
+        runs = [r for r in runs if r.get("asset") == asset]
+    if family is not None:
+        runs = [r for r in runs if r.get("family") == family]
+    if not runs:
+        typer.echo(f"No run artifacts under {base} (matching the filters).")
+        raise typer.Exit(code=1)
+
+    report_md = render_diagnostics(runs)
+    target = out if out is not None else base / "DIAGNOSTICS.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(report_md, encoding="utf-8")
+    typer.echo(report_md)
+    typer.echo(f"\nWrote {target}")

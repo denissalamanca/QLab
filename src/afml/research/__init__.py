@@ -12,11 +12,12 @@ from afml.research.grids import (
 )
 from afml.research.harness import (
     EventDataset,
+    TrialDiagnostics,
     TrialResult,
     build_event_dataset,
     run_trial,
 )
-from afml.research.objective import oos_strategy_sharpe
+from afml.research.objective import oos_strategy_sharpe, oos_strategy_sharpe_per_fold
 from afml.research.plateau import Coord, PlateauResult, select_plateau
 from afml.research.precompute import AssetPrecompute, precompute_asset
 from afml.research.regimes import DEFAULT_REGIME, REGIMES, HoldingRegime, get_regime
@@ -43,12 +44,14 @@ __all__ = [
     "PlateauResult",
     "SweepCertification",
     "SweepResult",
+    "TrialDiagnostics",
     "TrialResult",
     "build_event_dataset",
     "certify",
     "get_family_grid",
     "get_regime",
     "oos_strategy_sharpe",
+    "oos_strategy_sharpe_per_fold",
     "precompute_asset",
     "run_sweep",
     "run_trial",

@@ -22,6 +22,7 @@ from typing import Any
 
 import numpy as np
 
+from afml.research.harness import TrialDiagnostics
 from afml.research.precompute import AssetPrecompute
 from afml.research.sweep import CertificationResult, SweepCertification, SweepResult
 
@@ -83,6 +84,28 @@ def _certification_to_dict(cert: CertificationResult) -> dict[str, Any]:
     return out
 
 
+def _diagnostics_to_dict(d: TrialDiagnostics | None) -> dict[str, Any] | None:
+    """Per-stage diagnostics → JSON dict (the funnel/distribution data source)."""
+    if d is None:
+        return None
+    return {
+        "n_alpha_events": d.n_alpha_events,
+        "n_events_modeled": d.n_events_modeled,
+        "label_pos_rate": _num(d.label_pos_rate),
+        "return_mean": _num(d.return_mean),
+        "return_std": _num(d.return_std),
+        "mean_holding_bars": _num(d.mean_holding_bars),
+        "target_holding_bars": d.target_holding_bars,
+        "n_features_in": d.n_features_in,
+        "halted_at_mda": d.halted_at_mda,
+        "n_surviving_features": d.n_surviving_features,
+        "surviving_features": list(d.surviving_features),
+        "brier_calibrated": _num(d.brier_calibrated),
+        "brier_naive": _num(d.brier_naive),
+        "fold_sharpes": [_num(s) for s in d.fold_sharpes],
+    }
+
+
 def _sweep_to_dict(sweep: SweepResult) -> dict[str, Any]:
     surface = [
         {
@@ -94,6 +117,7 @@ def _sweep_to_dict(sweep: SweepResult) -> dict[str, Any]:
             "valid": t.valid,
             "score": _num(t.surface_score),
             "experiment_id": str(t.experiment_id) if t.experiment_id is not None else None,
+            "diagnostics": _diagnostics_to_dict(t.diagnostics),
         }
         for t in sweep.trials
     ]

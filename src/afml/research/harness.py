@@ -20,7 +20,7 @@ DoD. Invalid configs map to ``-inf`` on the surface (still logged as trials).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID
 
@@ -40,7 +40,7 @@ from afml.labeling import (
 )
 from afml.modeling import train_brain_two
 from afml.research.grids import DEFAULT_SL_MULT, get_family_grid
-from afml.research.objective import oos_strategy_sharpe
+from afml.research.objective import oos_strategy_sharpe_per_fold
 from afml.research.plateau import Coord
 from afml.research.precompute import AssetPrecompute
 from afml.selection import select_features
@@ -60,6 +60,34 @@ STATUS_INVALID: str = "invalid"
 
 
 @dataclass(frozen=True, slots=True)
+class TrialDiagnostics:
+    """Per-stage observability for one trial — the funnel from events to Sharpe.
+
+    Every field is what a human needs to see *where* a config succeeds or
+    degrades: how many events fired, whether labels are balanced, whether the
+    holding horizon matches the regime, how many feature clusters survived MDA,
+    whether the meta-model beat naive, and the per-fold OOS Sharpe spread (a
+    tight cluster is trustworthy; a high median on one lucky fold is not).
+    Populated progressively — early-exit paths leave later stages ``None``.
+    """
+
+    n_alpha_events: int
+    n_events_modeled: int | None = None  # after burn-in alignment + thinning
+    label_pos_rate: float | None = None  # P[y=1]
+    return_mean: float | None = None
+    return_std: float | None = None
+    mean_holding_bars: float | None = None
+    target_holding_bars: int | None = None  # regime vertical V
+    n_features_in: int | None = None
+    halted_at_mda: bool | None = None
+    n_surviving_features: int | None = None
+    surviving_features: tuple[str, ...] = ()
+    brier_calibrated: float | None = None
+    brier_naive: float | None = None
+    fold_sharpes: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class TrialResult:
     """One swept config's outcome."""
 
@@ -74,6 +102,7 @@ class TrialResult:
     brier_naive: float | None
     experiment_id: UUID | None
     detail: str
+    diagnostics: TrialDiagnostics | None = None  # per-stage observability
 
     @property
     def surface_score(self) -> float:
@@ -192,6 +221,25 @@ def build_event_dataset(
     return dataset, n_alpha, "ok"
 
 
+def _dataset_diagnostics(dataset: EventDataset, pc: AssetPrecompute) -> TrialDiagnostics:
+    """Stage 2-3 metrics; the FAILED_AT_MDA / completed paths extend it via ``replace``."""
+    bar_ms = pc.bar_hours * 3_600_000.0
+    hold_ms = (dataset.t1 - dataset.t0).astype(np.float64)
+    y = dataset.y
+    r = dataset.return_pct
+    n_feat = len([c for c in dataset.features_aligned.columns if c != "timestamp"])
+    return TrialDiagnostics(
+        n_alpha_events=dataset.n_alpha_events,
+        n_events_modeled=int(y.size),
+        label_pos_rate=float(y.mean()) if y.size else None,
+        return_mean=float(r.mean()) if r.size else None,
+        return_std=float(r.std(ddof=1)) if r.size > 1 else None,
+        mean_holding_bars=(float(hold_ms.mean() / bar_ms) if bar_ms > 0 and hold_ms.size else None),
+        target_holding_bars=pc.vertical_bars,
+        n_features_in=n_feat,
+    )
+
+
 def run_trial(
     pc: AssetPrecompute,
     family: str,
@@ -223,7 +271,18 @@ def run_trial(
 
     def _invalid(n: int, detail: str) -> TrialResult:
         return TrialResult(
-            family, coord, config, STATUS_INVALID, n, None, False, None, None, None, detail
+            family,
+            coord,
+            config,
+            STATUS_INVALID,
+            n,
+            None,
+            False,
+            None,
+            None,
+            None,
+            detail,
+            diagnostics=TrialDiagnostics(n_alpha_events=n),
         )
 
     # --- Phases 2-3: events → labels → features → V2-aligned arrays ----------
@@ -258,6 +317,9 @@ def run_trial(
         exp_id = _record(
             registry, "failed", agent_version, pc.asset, family, hyperparameter_vector, n_alpha
         )
+        diag = replace(
+            _dataset_diagnostics(dataset, pc), halted_at_mda=True, n_surviving_features=0
+        )
         return TrialResult(
             family,
             coord,
@@ -270,6 +332,7 @@ def run_trial(
             None,
             exp_id,
             "empty MDA survivors",
+            diagnostics=diag,
         )
 
     # --- Phase 5: Brain 2 (collect OOS for the objective) --------------------
@@ -291,13 +354,14 @@ def run_trial(
     brier_naive = brain2.mean_naive_brier
     beats_baseline = bool(brier_cal < brier_naive)
 
-    # --- Objective s(g) ------------------------------------------------------
-    objective = oos_strategy_sharpe(
+    # --- Objective s(g) (+ per-fold spread for diagnostics) ------------------
+    fold_sharpes = oos_strategy_sharpe_per_fold(
         brain2,
         dataset.return_pct,
         dataset.side_sign,
         periods_per_year=dataset.periods_per_year,
     )
+    objective = float(np.median(fold_sharpes)) if fold_sharpes else None
 
     valid = bool(beats_baseline and objective is not None and np.isfinite(objective))
     exp_id = _record(
@@ -309,6 +373,15 @@ def run_trial(
         hyperparameter_vector,
         n_alpha,
         brain_2_log_loss=brier_cal,
+    )
+    diag = replace(
+        _dataset_diagnostics(dataset, pc),
+        halted_at_mda=False,
+        n_surviving_features=len(selection.surviving_features),
+        surviving_features=tuple(selection.surviving_features),
+        brier_calibrated=brier_cal,
+        brier_naive=brier_naive,
+        fold_sharpes=tuple(fold_sharpes),
     )
     return TrialResult(
         family,
@@ -322,6 +395,7 @@ def run_trial(
         brier_naive,
         exp_id,
         "ok" if valid else "completed but invalid for surface",
+        diagnostics=diag,
     )
 
 

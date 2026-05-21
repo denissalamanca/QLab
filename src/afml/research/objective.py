@@ -55,6 +55,32 @@ def oos_strategy_sharpe(
     The median fold Sharpe, or ``None`` if no fold yields a finite Sharpe
     (e.g. a halted-MDA result, or zero-variance returns everywhere).
     """
+    fold_sharpes = oos_strategy_sharpe_per_fold(
+        result,
+        return_pct,
+        side_sign,
+        periods_per_year=periods_per_year,
+        min_fold_events=min_fold_events,
+    )
+    if not fold_sharpes:
+        return None
+    return float(np.median(fold_sharpes))
+
+
+def oos_strategy_sharpe_per_fold(
+    result: BrainTwoResult,
+    return_pct: npt.NDArray[np.float64],
+    side_sign: npt.NDArray[np.int64],
+    *,
+    periods_per_year: float,
+    min_fold_events: int = 2,
+) -> list[float]:
+    """Per-fold annualised strategy Sharpe (the list :func:`oos_strategy_sharpe` medians).
+
+    Exposed for diagnostics: the *dispersion* across folds is itself a signal —
+    a high median riding on one lucky fold (wide spread) is far less trustworthy
+    than a tight cluster. Same semantics/guards as :func:`oos_strategy_sharpe`.
+    """
     if result.oos_predictions is None:
         raise ValueError(
             "BrainTwoResult carries no oos_predictions — call "
@@ -78,6 +104,4 @@ def oos_strategy_sharpe(
             continue
         fold_sharpes.append(float(strat_returns.mean() / std) * annualisation)
 
-    if not fold_sharpes:
-        return None
-    return float(np.median(fold_sharpes))
+    return fold_sharpes
