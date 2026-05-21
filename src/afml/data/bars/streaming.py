@@ -24,7 +24,8 @@ import numpy as np
 import numpy.typing as npt
 import polars as pl
 
-from afml.data.bars.tick_imbalance import _empty_bar_frame
+from afml.data.bars.tick_imbalance import _empty_bar_frame, build_tick_imbalance_bars
+from afml.data.bars.tick_run import build_tick_run_bars
 
 # Resumable-kernel state layout (float64 vector; ms timestamps and small ints all
 # fit exactly in float64 < 2**53). Shared scalar slots:
@@ -67,6 +68,7 @@ def _tib_chunk(  # noqa: PLR0915 — one sequential state-machine loop; splittin
     alpha_T: float,
     alpha_P: float,
     min_threshold: float,
+    fixed_threshold: float,
 ) -> tuple[
     npt.NDArray[np.int64],
     npt.NDArray[np.float64],
@@ -140,8 +142,10 @@ def _tib_chunk(  # noqa: PLR0915 — one sequential state-machine loop; splittin
             if b == 1:
                 bar_plus += 1
 
-        threshold = ema_T * abs(2.0 * ema_P - 1.0)
-        threshold = max(threshold, min_threshold)
+        if fixed_threshold > 0.0:
+            threshold = fixed_threshold
+        else:
+            threshold = max(ema_T * abs(2.0 * ema_P - 1.0), min_threshold)
 
         prev_px = px
 
@@ -184,7 +188,7 @@ def _tib_chunk(  # noqa: PLR0915 — one sequential state-machine loop; splittin
 
 
 @numba.njit(cache=True)
-def _trb_chunk(  # noqa: PLR0915 — one sequential state-machine loop; splitting harms clarity
+def _trb_chunk(  # noqa: PLR0915, PLR0912 — one sequential state-machine loop; splitting harms clarity
     prices: npt.NDArray[np.float64],
     vols: npt.NDArray[np.float64],
     ts: npt.NDArray[np.int64],
@@ -192,6 +196,7 @@ def _trb_chunk(  # noqa: PLR0915 — one sequential state-machine loop; splittin
     alpha_T: float,
     alpha_P: float,
     min_threshold: float,
+    fixed_threshold: float,
 ) -> tuple[
     npt.NDArray[np.int64],
     npt.NDArray[np.float64],
@@ -267,9 +272,11 @@ def _trb_chunk(  # noqa: PLR0915 — one sequential state-machine loop; splittin
                 n_minus += 1
 
         theta = n_plus if n_plus >= n_minus else n_minus
-        max_prob = ema_P if ema_P >= (1.0 - ema_P) else (1.0 - ema_P)
-        threshold = ema_T * max_prob
-        threshold = max(threshold, min_threshold)
+        if fixed_threshold > 0.0:
+            threshold = fixed_threshold
+        else:
+            max_prob = ema_P if ema_P >= (1.0 - ema_P) else (1.0 - ema_P)
+            threshold = max(ema_T * max_prob, min_threshold)
 
         prev_px = px
 
@@ -332,6 +339,7 @@ def build_information_bars_streaming(
     alpha_T: float = 0.05,
     alpha_P: float = 0.05,
     min_threshold: float = 1.0,
+    fixed_threshold: float = 0.0,
     chunk_rows: int = DEFAULT_CHUNK_ROWS,
 ) -> pl.DataFrame:
     """Build TIB or TRB bars from a lazy tick frame in bounded memory.
@@ -349,6 +357,10 @@ def build_information_bars_streaming(
         ``"tick_imbalance"`` or ``"tick_run"``.
     initial_expected_ticks, initial_prob_buy, alpha_T, alpha_P, min_threshold
         Identical semantics to the single-pass builders.
+    fixed_threshold
+        ``> 0`` pins the imbalance/run threshold to a constant (the
+        target-calibrated mode — robust against the adaptive EWMA's
+        runaway-collapse; see :func:`calibrate_information_bar_threshold`).
     chunk_rows
         Physical slice size. Memory ≈ ``chunk_rows × ~40 bytes``.
     """
@@ -366,7 +378,7 @@ def build_information_bars_streaming(
             break
         mid, vol, ts = _chunk_arrays(chunk)
         kernel = _tib_chunk if bar_type == "tick_imbalance" else _trb_chunk
-        emitted = kernel(mid, vol, ts, state, alpha_T, alpha_P, min_threshold)
+        emitted = kernel(mid, vol, ts, state, alpha_T, alpha_P, min_threshold, fixed_threshold)
         if emitted[0].size:
             for j in range(7):
                 cols[j].append(emitted[j])
@@ -387,3 +399,45 @@ def build_information_bars_streaming(
         "volume": np.concatenate(cols[5]),
         "n_ticks": np.concatenate(cols[6]),
     })
+
+
+def calibrate_information_bar_threshold(
+    sample: pl.DataFrame,
+    *,
+    bar_type: str,
+    target_ticks_per_bar: float,
+    max_iter: int = 40,
+    tol: float = 0.03,
+) -> float:
+    """Bisect a *fixed* threshold ``h`` so the sample averages ≈ ``target_ticks_per_bar``.
+
+    The adaptive EWMA threshold runs away (collapses to ~1 tick/bar over long
+    spans). A fixed ``h`` calibrated so a representative tick **sample** hits the
+    regime's target ticks/bar yields ≈ that granularity on the full series, with
+    no self-adaptation to collapse. ``n_bars(h)`` is monotone-decreasing, so a
+    simple bisection converges. Run on a *contiguous* sample (the tick-sign rule
+    depends on consecutive ticks) — striding would corrupt it.
+
+    Returns the calibrated ``h`` (pass as ``fixed_threshold=`` to the builders).
+    """
+    if bar_type not in ("tick_imbalance", "tick_run"):
+        raise ValueError(f"bar_type must be tick_imbalance|tick_run, got {bar_type!r}")
+    builder = build_tick_imbalance_bars if bar_type == "tick_imbalance" else build_tick_run_bars
+    n = sample.height
+    if n == 0 or target_ticks_per_bar <= 0.0:
+        return 1.0
+    target_bars = max(float(n) / target_ticks_per_bar, 1.0)
+
+    lo, hi = 1.0, max(target_ticks_per_bar, 2.0)
+    best = hi
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        bars = builder(sample, fixed_threshold=mid).height
+        best = mid
+        if abs(bars - target_bars) <= tol * target_bars:
+            break
+        if bars > target_bars:  # too many bars → raise the threshold
+            lo = mid
+        else:  # too few bars → lower the threshold
+            hi = mid
+    return best

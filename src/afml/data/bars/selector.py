@@ -15,7 +15,10 @@ from typing import Literal
 import numpy as np
 import polars as pl
 
-from afml.data.bars.streaming import build_information_bars_streaming
+from afml.data.bars.streaming import (
+    build_information_bars_streaming,
+    calibrate_information_bar_threshold,
+)
 from afml.data.bars.tick_imbalance import build_tick_imbalance_bars
 from afml.data.bars.tick_run import build_tick_run_bars
 from afml.data.bars.time_bars import build_time_bars
@@ -51,6 +54,10 @@ class BarSelection:
 
 DEFAULT_TIME_INTERVALS: tuple[str, ...] = ("1m", "5m", "15m", "30m", "1h")
 DEFAULT_TICK_EXPECTED: tuple[float, ...] = (50.0, 100.0, 200.0, 500.0, 1000.0)
+
+#: Contiguous tick sample (rows) used to calibrate the fixed information-bar
+#: threshold — bounded so streaming stays memory-safe on full-history assets.
+CALIB_SAMPLE_ROWS: int = 5_000_000
 
 
 def _log_returns(bars: pl.DataFrame) -> np.ndarray:
@@ -173,6 +180,12 @@ def select_bar_type_streaming(
     streaming engine, TIB/TRB through the resumable row-slice kernels) so the
     full tick frame is never materialised. The JB scoring + plateau selection
     are identical to :func:`select_bar_type`.
+
+    The information-bar threshold is **calibrated** (on a bounded contiguous tick
+    sample) to the target ticks/bar implied by each ``tick_expected_ticks`` value
+    and held **fixed** for the full build — so TIB/TRB land at the regime
+    granularity and the JB tournament is a *fair* like-for-like comparison
+    (the adaptive EWMA threshold runs away to ~1 tick/bar over long spans).
     """
     sweep: list[BarTypeSweepResult] = []
     bars_by_key: dict[tuple[BarType, float | str], pl.DataFrame] = {}
@@ -183,21 +196,22 @@ def select_bar_type_streaming(
         sweep.append(BarTypeSweepResult("time", interval, jb, n))
         bars_by_key[("time", interval)] = bars
 
-    for et in tick_expected_ticks:
-        bars = build_information_bars_streaming(
-            ticks, bar_type="tick_imbalance", initial_expected_ticks=et, chunk_rows=chunk_rows
-        )
-        jb, n = _score(bars)
-        sweep.append(BarTypeSweepResult("tick_imbalance", et, jb, n))
-        bars_by_key[("tick_imbalance", et)] = bars
-
-    for et in tick_expected_ticks:
-        bars = build_information_bars_streaming(
-            ticks, bar_type="tick_run", initial_expected_ticks=et, chunk_rows=chunk_rows
-        )
-        jb, n = _score(bars)
-        sweep.append(BarTypeSweepResult("tick_run", et, jb, n))
-        bars_by_key[("tick_run", et)] = bars
+    # One bounded, contiguous sample drives threshold calibration for every
+    # information-bar candidate (kept off the full frame to stay memory-safe).
+    if tick_expected_ticks:
+        sample = ticks.slice(0, CALIB_SAMPLE_ROWS).collect()
+        for et in tick_expected_ticks:
+            for bar_type in ("tick_imbalance", "tick_run"):
+                h = calibrate_information_bar_threshold(
+                    sample, bar_type=bar_type, target_ticks_per_bar=et
+                )
+                bars = build_information_bars_streaming(
+                    ticks, bar_type=bar_type, fixed_threshold=h, chunk_rows=chunk_rows
+                )
+                jb, n = _score(bars)
+                key: BarType = "tick_imbalance" if bar_type == "tick_imbalance" else "tick_run"
+                sweep.append(BarTypeSweepResult(key, et, jb, n))
+                bars_by_key[(key, et)] = bars
 
     return _assemble_selection(sweep, bars_by_key, plateau_factor)
 

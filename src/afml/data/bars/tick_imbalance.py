@@ -42,8 +42,15 @@ def _compute_tib_bar_indices(
     alpha_T: float,
     alpha_P: float,
     min_threshold: float,
+    fixed_threshold: float,
 ) -> npt.NDArray[np.int64]:
-    """Return the closing-tick index of each TIB bar."""
+    """Return the closing-tick index of each TIB bar.
+
+    ``fixed_threshold > 0`` pins the imbalance threshold to a constant (the
+    target-calibrated mode — robust against the EWMA runaway-collapse); the
+    EWMAs still advance but are unused. ``fixed_threshold == 0`` ⇒ the adaptive
+    ``E₀[T]·|2P−1|`` threshold.
+    """
     n = prices.shape[0]
     closes = np.empty(n, dtype=np.int64)
     n_bars = 0
@@ -70,8 +77,10 @@ def _compute_tib_bar_indices(
         if b == 1:
             bar_plus_count += 1
 
-        threshold = ema_T * abs(2.0 * ema_P - 1.0)
-        threshold = max(threshold, min_threshold)
+        if fixed_threshold > 0.0:
+            threshold = fixed_threshold
+        else:
+            threshold = max(ema_T * abs(2.0 * ema_P - 1.0), min_threshold)
 
         if abs(theta) >= threshold:
             ticks_in_bar = i - bar_open + 1
@@ -146,6 +155,7 @@ def build_tick_imbalance_bars(
     alpha_T: float = 0.05,
     alpha_P: float = 0.05,
     min_threshold: float = 1.0,
+    fixed_threshold: float = 0.0,
 ) -> pl.DataFrame:
     """Build Tick Imbalance Bars from a tick DataFrame.
 
@@ -181,6 +191,7 @@ def build_tick_imbalance_bars(
         alpha_T,
         alpha_P,
         min_threshold,
+        fixed_threshold,
     )
     if closes.size == 0:
         return _empty_bar_frame()

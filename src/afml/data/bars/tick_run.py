@@ -37,8 +37,15 @@ def _compute_trb_bar_indices(
     alpha_T: float,
     alpha_P: float,
     min_threshold: float,
+    fixed_threshold: float,
 ) -> npt.NDArray[np.int64]:
-    """Return the closing-tick index of each TRB bar."""
+    """Return the closing-tick index of each TRB bar.
+
+    ``fixed_threshold > 0`` pins the run threshold to a constant (the
+    target-calibrated mode — robust against the EWMA runaway-collapse); the
+    EWMAs still advance but are unused. ``fixed_threshold == 0`` ⇒ the adaptive
+    ``E₀[T]·max(P, 1−P)`` threshold.
+    """
     n = prices.shape[0]
     closes = np.empty(n, dtype=np.int64)
     n_bars = 0
@@ -68,10 +75,12 @@ def _compute_trb_bar_indices(
 
         theta = n_plus if n_plus >= n_minus else n_minus
 
-        # Threshold: expected-ticks scaled by max probability.
-        max_prob = ema_P if ema_P >= (1.0 - ema_P) else (1.0 - ema_P)
-        threshold = ema_T * max_prob
-        threshold = max(threshold, min_threshold)
+        if fixed_threshold > 0.0:
+            threshold = fixed_threshold
+        else:
+            # Expected-ticks scaled by max probability.
+            max_prob = ema_P if ema_P >= (1.0 - ema_P) else (1.0 - ema_P)
+            threshold = max(ema_T * max_prob, min_threshold)
 
         if theta >= threshold:
             ticks_in_bar = i - bar_open + 1
@@ -98,6 +107,7 @@ def build_tick_run_bars(
     alpha_T: float = 0.05,
     alpha_P: float = 0.05,
     min_threshold: float = 1.0,
+    fixed_threshold: float = 0.0,
 ) -> pl.DataFrame:
     """Build Tick Run Bars from a tick DataFrame.
 
@@ -119,6 +129,7 @@ def build_tick_run_bars(
         alpha_T,
         alpha_P,
         min_threshold,
+        fixed_threshold,
     )
     if closes.size == 0:
         return _empty_bar_frame()

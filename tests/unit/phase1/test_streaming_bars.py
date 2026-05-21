@@ -15,7 +15,10 @@ import numpy as np
 import polars as pl
 import pytest
 
-from afml.data.bars.streaming import build_information_bars_streaming
+from afml.data.bars.streaming import (
+    build_information_bars_streaming,
+    calibrate_information_bar_threshold,
+)
 from afml.data.bars.tick_imbalance import build_tick_imbalance_bars
 from afml.data.bars.tick_run import build_tick_run_bars
 from afml.data.bars.time_bars import build_time_bars
@@ -105,3 +108,53 @@ def test_streaming_empty_input_returns_empty_frame() -> None:
     out = build_information_bars_streaming(empty.lazy(), bar_type="tick_imbalance")
     assert out.height == 0
     assert out.columns == ["timestamp", "open", "high", "low", "close", "volume", "n_ticks"]
+
+
+# --- fixed-threshold (calibrated) mode — Stage-1 EWMA-collapse fix --------------
+
+
+@pytest.mark.parametrize("bar_type", ["tick_imbalance", "tick_run"])
+@pytest.mark.parametrize("chunk_rows", [137, 1000, 100_000])
+def test_fixed_threshold_streaming_matches_single_pass(bar_type: str, chunk_rows: int) -> None:
+    """The fixed-threshold path must also be bar-for-bar identical across chunks."""
+    ticks = _synth_ticks()
+    single = (
+        build_tick_imbalance_bars(ticks, fixed_threshold=20.0)
+        if bar_type == "tick_imbalance"
+        else build_tick_run_bars(ticks, fixed_threshold=20.0)
+    )
+    stream = build_information_bars_streaming(
+        ticks.lazy(), bar_type=bar_type, fixed_threshold=20.0, chunk_rows=chunk_rows
+    )
+    _assert_bars_identical(single, stream)
+
+
+@pytest.mark.parametrize("bar_type", ["tick_imbalance", "tick_run"])
+def test_calibration_hits_target_ticks_per_bar(bar_type: str) -> None:
+    """Calibrated fixed threshold lands the realised ticks/bar near the target."""
+    ticks = _synth_ticks(n=40000, seed=5)
+    target = 250.0
+    h = calibrate_information_bar_threshold(ticks, bar_type=bar_type, target_ticks_per_bar=target)
+    assert h > 0.0
+    bars = build_information_bars_streaming(
+        ticks.lazy(), bar_type=bar_type, fixed_threshold=h, chunk_rows=10_000
+    )
+    mean_ticks = float(bars["n_ticks"].to_numpy().mean())
+    assert 0.5 * target <= mean_ticks <= 2.0 * target  # within a factor of 2 of the target
+
+
+def test_fixed_threshold_gives_controlled_bar_count() -> None:
+    """A fixed threshold yields a controlled ticks/bar — never the ~1-tick collapse.
+
+    (The adaptive-EWMA runaway-collapse is shown on real 2-year data, where it
+    produced 17.6M bars from 49.5M ticks; here we pin that the fixed path stays
+    coarse and bounded.)
+    """
+    ticks = _synth_ticks(n=30000, seed=2)
+    trb = build_tick_run_bars(ticks, fixed_threshold=100.0)
+    tib = build_tick_imbalance_bars(ticks, fixed_threshold=100.0)
+    trb_tpb = 30000 / max(trb.height, 1)
+    tib_tpb = 30000 / max(tib.height, 1)
+    # TRB closes at max(n±)≥100 → ~100-300 ticks/bar; never the ~1-tick collapse.
+    assert trb_tpb >= 50.0
+    assert tib_tpb >= 50.0
